@@ -1,0 +1,40 @@
+plugins {
+    id 'com.android.library'
+}
+
+android {
+    compileSdkVersion 30
+
+    buildFeatures {
+        aidl = false
+        buildConfig = false
+        resValues = false
+        viewBinding = false
+        shaders = false
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.10.2'
+        }
+    }
+}
+
+// Copy in the Instrumentation.dex file into the build/ folder so CMakeLists.txt can embed it into
+// the cpp library.
+task copyDexFileIn(type: Copy) {
+    dependsOn(':runtime_java:copyDexFile')
+
+    from(project(":runtime_java").layout.buildDirectory.file("Instrumentation.dex"))
+    into('src/main/cpp/gen')
+}
+
+afterEvaluate {
+    externalNativeBuildDebug.dependsOn(copyDexFileIn)
+}

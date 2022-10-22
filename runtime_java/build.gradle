@@ -1,0 +1,33 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    compileSdkVersion 20
+
+    buildFeatures {
+        aidl = false
+        buildConfig = false
+        resValues = false
+        viewBinding = false
+        shaders = false
+    }
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}
+
+// Make a task that copies the instrumentation `.dex` file to the build folder so it can be picked
+// up in the other project.
+task copyDexFile(type: Copy) {
+    from(layout.buildDirectory.file("intermediates/project_dex_archive/debug/out/com/ammaraskar/coverageagent/Instrumentation.dex"))
+    into('build')
+}
+
+afterEvaluate {
+    copyDexFile.dependsOn(assembleDebug)
+
+    assembleDebug.finalizedBy(copyDexFile)
+    assembleRelease.finalizedBy(copyDexFile)
+}
