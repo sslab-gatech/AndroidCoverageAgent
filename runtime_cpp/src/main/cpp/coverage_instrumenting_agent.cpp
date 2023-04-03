@@ -10,6 +10,8 @@
 
 #include <android/log.h>
 
+#include <sys/mman.h>
+
 #include "include/jvmti.h"
 
 #include "jvmti_allocator.h"
@@ -60,6 +62,11 @@ public:
 
     bool transform() {
         for (auto &method : dexIr_->encoded_methods) {
+            ALOGI("checking method: %s.%s%s\n",
+                   method->decl->parent->Decl().c_str(),
+                   method->decl->name->c_str(),
+                   method->decl->prototype->Signature().c_str());
+
             // Do not look into abstract/bridge/native/synthetic methods.
             if ((method->access_flags &
                  (dex::kAccAbstract | dex::kAccBridge | dex::kAccNative | dex::kAccSynthetic)) !=
@@ -158,7 +165,7 @@ std::string classNameToDescriptor(const char *className) {
 std::optional<std::pair<dex::u1 *, size_t>>
 transformClass(const char *name, size_t classDataLen, const unsigned char *classData,
                dex::Writer::Allocator *allocator) {
-    ALOGI("Trying to instrument: %s", name);
+    ALOGI("Trying to instrument class: %s", name);
     dex::Reader reader(classData, classDataLen);
 
     // Find the actual class amongst all the classData.
@@ -187,14 +194,14 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
                    unsigned char **newClassData) {
     //ALOGI("transformHook(%s, loader=%px)", name, loader);
 
-    // Don't instruemnt the instrumentation class
+    // Don't instrument the instrumentation class
     if (strcmp(name, "com/ammaraskar/coverageagent/Instrumentation") == 0) {
         return;
     }
 
     //ALOGI("Transform hook called with name: %s", name);
     // Only instrument my own classes.
-    if (strncmp("com/ammaraskar/", name, 14) != 0) {
+    if (strncmp("org/gts3/", name, 9) != 0) {
         return;
     }
 
@@ -205,6 +212,158 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
         *newClassData = new_class->first;
         *newClassDataLen = new_class->second;
     }
+}
+
+
+void nativeFunctionHook();
+
+
+class NativeHook {
+public:
+    // Constructor
+    NativeHook(void *originalFunction, std::string functionName, char *methodSignature)
+            : originalFunction(originalFunction), functionName(functionName),
+              methodSignature(methodSignature) {
+        createTrampoline();
+    }
+
+    void instrumentation() {
+        ALOGI("Instrumentation called for %s", functionName.c_str());
+        // TODO: Log full name (package + class + method + signature)
+    }
+
+    // Contains the original function, the function name, the method signature, and the trampoline
+    void *originalFunction;
+    std::string functionName;
+    char *methodSignature;
+    void *trampoline;
+
+private:
+    void createTrampoline() {
+        // Allocate rwx page
+        // TODO: Reuse pages
+        void *trampoline = mmap(nullptr, 4096, PROT_READ | PROT_WRITE | PROT_EXEC,
+                                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (trampoline == MAP_FAILED) {
+            ALOGE("Failed to allocate trampoline");
+            exit(1);
+        }
+
+        // Write the trampoline code
+        unsigned char *trampoline_code = reinterpret_cast<unsigned char *>(trampoline);
+
+        /*
+         * In the assembly, we want to:
+         * 1. Save the argument registers
+         * 2. Call the instrumentation
+         * 3. Restore the argument registers
+         * 4. Jump to the original function
+         */
+
+#ifdef __x86_64__
+        // Push rax (Fix the stack alignment)
+        trampoline_code[0] = 0x50;
+
+        // Save the argument registers (push rdi, rsi, rdx, rcx, r8, r9)
+        trampoline_code[1] = 0x57;
+        trampoline_code[2] = 0x56;
+        trampoline_code[3] = 0x52;
+        trampoline_code[4] = 0x51;
+        trampoline_code[5] = 0x41;
+        trampoline_code[6] = 0x50;
+        trampoline_code[7] = 0x41;
+        trampoline_code[8] = 0x51;
+
+        // Call the instrumentation
+        // mov rax, <address>
+        trampoline_code[9] = 0x48;
+        trampoline_code[10] = 0xb8;
+        *reinterpret_cast<void **>(&trampoline_code[11]) = reinterpret_cast<void *>(&nativeFunctionHook);
+        // mov rbx, <this>
+        trampoline_code[19] = 0x48;
+        trampoline_code[20] = 0xbb;
+        *reinterpret_cast<void **>(&trampoline_code[21]) = reinterpret_cast<void *>(this);
+        // call rax
+        trampoline_code[29] = 0xff;
+        trampoline_code[30] = 0xd0;
+
+        // Restore the argument registers (pop r9, r8, rcx, rdx, rsi, rdi)
+        trampoline_code[31] = 0x41;
+        trampoline_code[32] = 0x59;
+        trampoline_code[33] = 0x41;
+        trampoline_code[34] = 0x58;
+        trampoline_code[35] = 0x59;
+        trampoline_code[36] = 0x5a;
+        trampoline_code[37] = 0x5e;
+        trampoline_code[38] = 0x5f;
+
+        // Add 8 to rsp (Fix the stack alignment)
+        trampoline_code[39] = 0x48;
+        trampoline_code[40] = 0x83;
+        trampoline_code[41] = 0xc4;
+        trampoline_code[42] = 0x08;
+
+        // Jump to the original function
+        // mov rax, <address>
+        trampoline_code[43] = 0x48;
+        trampoline_code[44] = 0xb8;
+        *reinterpret_cast<void **>(&trampoline_code[45]) = originalFunction;
+        // jmp rax
+        trampoline_code[53] = 0xff;
+        trampoline_code[54] = 0xe0;
+
+#elif __aarch64__
+        // TODO
+#elif __i386__
+        // TODO
+#elif __arm__
+        // TODO
+#else
+#error "Unsupported architecture"
+#endif
+
+        // Flush the instruction cache
+        __builtin___clear_cache((char *)trampoline, (char *)trampoline + 4096);
+
+        this->trampoline =  trampoline;
+    }
+};
+
+
+void nativeFunctionHook() {
+    NativeHook *nativeHook;
+    // Retrieve the nativeHook
+#ifdef __x86_64__
+    __asm__ (
+    "movq %%rbx, %0\n"
+    : "=r" (nativeHook)
+    );
+#elif __aarch64__
+    // TODO
+#elif __i386__
+    // TODO
+#elif __arm__
+    // TODO
+#else
+#error "Unsupported architecture"
+#endif
+
+    nativeHook->instrumentation();
+}
+
+
+void transformNativeHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
+                         jthread thread, jmethodID method, void *address, void **new_address_ptr) {
+    char *method_name;
+    char *method_signature;
+    jvmtiError error = jvmtiEnv->GetMethodName(method, &method_name, &method_signature, NULL);
+    ALOGI("Hooking function: %s\n", method_name);
+
+    if (strcmp(method_name, "toUpper") != 0)
+        return;
+
+    NativeHook *nativeHook = new NativeHook(address, method_name, method_signature);
+    *new_address_ptr = reinterpret_cast<void *>(nativeHook->trampoline);
 }
 
 void addInstrumentationClassToClassPath(jvmtiEnv *jvmtiEnv, char* appDataDir) {
@@ -234,33 +393,42 @@ jvmtiEnv *CreateJvmtiEnv(JavaVM *vm) {
 // Early attachment (e.g. 'java -agent[lib|path]:filename.so').
 extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
                                                  void *reserved) {
+    ALOGI("========== Agent_OnLoad Start =======");
+
     jvmtiEnv *env = CreateJvmtiEnv(vm);
     if (env == nullptr) {
         ALOGE("Unable to create jvmti env");
         return JNI_ERR;
     }
 
+    jvmtiCapabilities caps = {0};
+    caps.can_generate_native_method_bind_events = 1;
+    caps.can_retransform_classes = 1;
+    if (env->AddCapabilities(&caps) != JVMTI_ERROR_NONE) {
+        ALOGE("Unable to add can_generate_native_method_bind_events capability");
+        return JNI_ERR;
+    }
+
     jvmtiEventCallbacks callbacks = {0};
     callbacks.ClassFileLoadHook = transformHook;
+    callbacks.NativeMethodBind = transformNativeHook;
     if (env->SetEventCallbacks(&callbacks, sizeof(callbacks)) != JVMTI_ERROR_NONE) {
         ALOGE("Unable to set jvmti file load hook");
         return JNI_ERR;
     }
     if (env->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_FILE_LOAD_HOOK, nullptr) !=
         JVMTI_ERROR_NONE) {
-        ALOGE("Unable to set event notification");
+        ALOGE("Unable to set event notification (JVMTI_EVENT_CLASS_FILE_LOAD_HOOK)");
         return JNI_ERR;
     }
     if (env->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_INIT, nullptr) !=
         JVMTI_ERROR_NONE) {
-        ALOGE("Unable to set event notification");
+        ALOGE("Unable to set event notification (JVMTI_EVENT_VM_INIT)");
         return JNI_ERR;
     }
-
-    jvmtiCapabilities caps = {0};
-    caps.can_retransform_classes = 1;
-    if (env->AddCapabilities(&caps) != JVMTI_ERROR_NONE) {
-        ALOGE("Unable to add retransform capability");
+    if (env->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND, nullptr) !=
+        JVMTI_ERROR_NONE) {
+        ALOGE("Unable to set event notification (JVMTI_EVENT_NATIVE_METHOD_BIND)");
         return JNI_ERR;
     }
 
@@ -268,9 +436,7 @@ extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
     // app's data directory.
     addInstrumentationClassToClassPath(env, input);
 
-
-
-    ALOGI("==========Agent_OnAttach=======");
+    ALOGI("========== Agent_OnLoad End =======");
 
     return JNI_OK;
 }
