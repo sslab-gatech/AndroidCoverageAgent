@@ -3,6 +3,7 @@ plugins {
 }
 
 android {
+    namespace = "com.ammaraskar.coverageagent"
     compileSdkVersion 20
 
     buildFeatures {
@@ -27,6 +28,8 @@ task copyDexFile(type: Copy) {
 
 afterEvaluate {
     copyDexFile.dependsOn(assembleDebug)
+    createDebugApkListingFileRedirect.dependsOn(copyDexFile)
+    createReleaseApkListingFileRedirect.dependsOn(copyDexFile)
 
     assembleDebug.finalizedBy(copyDexFile)
     assembleRelease.finalizedBy(copyDexFile)
