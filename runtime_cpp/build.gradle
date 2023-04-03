@@ -3,6 +3,7 @@ plugins {
 }
 
 android {
+    namespace = "com.ammaraskar.coverageagent"
     compileSdkVersion 30
 
     buildFeatures {
