@@ -221,36 +221,49 @@ void nativeFunctionHook();
 class NativeHook {
 public:
     // Constructor
-    NativeHook(void *originalFunction, std::string functionName, char *methodSignature)
-            : originalFunction(originalFunction), functionName(functionName),
-              methodSignature(methodSignature) {
+    NativeHook(void *originalFunction, std::string className, std::string functionName,
+               std::string methodSignature) : originalFunction(originalFunction),
+                                              className(className),
+                                              functionName(functionName),
+                                              methodSignature(methodSignature) {
         createTrampoline();
     }
 
     void instrumentation() {
-        ALOGI("Instrumentation called for %s", functionName.c_str());
-        // TODO: Log full name (package + class + method + signature)
+        ALOGI("Instrumentation called for: %s in class %s (signature: %s)", functionName.c_str(),
+              className.c_str(), methodSignature.c_str());
     }
 
     // Contains the original function, the function name, the method signature, and the trampoline
-    void *originalFunction;
+    std::string className;
     std::string functionName;
-    char *methodSignature;
+    std::string methodSignature;
+    void *originalFunction;
     void *trampoline;
+
+    static void *currentPage;
+    static int currentPageOffset;
 
 private:
     void createTrampoline() {
-        // Allocate rwx page
-        // TODO: Reuse pages
-        void *trampoline = mmap(nullptr, 4096, PROT_READ | PROT_WRITE | PROT_EXEC,
-                                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if (trampoline == MAP_FAILED) {
-            ALOGE("Failed to allocate trampoline");
-            exit(1);
-        }
+        unsigned int trampoline_code_size;
+#ifdef __x86_64__
+        trampoline_code_size = 55;
+#elif __aarch64__
+        // TODO
+        trampoline_code_size = 0;
+#elif __i386__
+        // TODO
+        trampoline_code_size = 0;
+#elif __arm__
+        // TODO
+        trampoline_code_size = 0;
+#else
+#error "Unsupported architecture"
+#endif
 
-        // Write the trampoline code
-        unsigned char *trampoline_code = reinterpret_cast<unsigned char *>(trampoline);
+        // Get memory for the trampoline_ptr code
+        unsigned char *trampoline_ptr = static_cast<unsigned char *>(getTrampolineMemory(trampoline_code_size));
 
         /*
          * In the assembly, we want to:
@@ -259,58 +272,57 @@ private:
          * 3. Restore the argument registers
          * 4. Jump to the original function
          */
-
 #ifdef __x86_64__
-        // Push rax (Fix the stack alignment)
-        trampoline_code[0] = 0x50;
+        // Fix the stack alignment (push rax)
+        trampoline_ptr[0] = 0x50;
 
         // Save the argument registers (push rdi, rsi, rdx, rcx, r8, r9)
-        trampoline_code[1] = 0x57;
-        trampoline_code[2] = 0x56;
-        trampoline_code[3] = 0x52;
-        trampoline_code[4] = 0x51;
-        trampoline_code[5] = 0x41;
-        trampoline_code[6] = 0x50;
-        trampoline_code[7] = 0x41;
-        trampoline_code[8] = 0x51;
+        trampoline_ptr[1] = 0x57;
+        trampoline_ptr[2] = 0x56;
+        trampoline_ptr[3] = 0x52;
+        trampoline_ptr[4] = 0x51;
+        trampoline_ptr[5] = 0x41;
+        trampoline_ptr[6] = 0x50;
+        trampoline_ptr[7] = 0x41;
+        trampoline_ptr[8] = 0x51;
 
         // Call the instrumentation
         // mov rax, <address>
-        trampoline_code[9] = 0x48;
-        trampoline_code[10] = 0xb8;
-        *reinterpret_cast<void **>(&trampoline_code[11]) = reinterpret_cast<void *>(&nativeFunctionHook);
+        trampoline_ptr[9] = 0x48;
+        trampoline_ptr[10] = 0xb8;
+        *reinterpret_cast<void **>(&trampoline_ptr[11]) = reinterpret_cast<void *>(&nativeFunctionHook);
         // mov rbx, <this>
-        trampoline_code[19] = 0x48;
-        trampoline_code[20] = 0xbb;
-        *reinterpret_cast<void **>(&trampoline_code[21]) = reinterpret_cast<void *>(this);
+        trampoline_ptr[19] = 0x48;
+        trampoline_ptr[20] = 0xbb;
+        *reinterpret_cast<void **>(&trampoline_ptr[21]) = reinterpret_cast<void *>(this);
         // call rax
-        trampoline_code[29] = 0xff;
-        trampoline_code[30] = 0xd0;
+        trampoline_ptr[29] = 0xff;
+        trampoline_ptr[30] = 0xd0;
 
         // Restore the argument registers (pop r9, r8, rcx, rdx, rsi, rdi)
-        trampoline_code[31] = 0x41;
-        trampoline_code[32] = 0x59;
-        trampoline_code[33] = 0x41;
-        trampoline_code[34] = 0x58;
-        trampoline_code[35] = 0x59;
-        trampoline_code[36] = 0x5a;
-        trampoline_code[37] = 0x5e;
-        trampoline_code[38] = 0x5f;
+        trampoline_ptr[31] = 0x41;
+        trampoline_ptr[32] = 0x59;
+        trampoline_ptr[33] = 0x41;
+        trampoline_ptr[34] = 0x58;
+        trampoline_ptr[35] = 0x59;
+        trampoline_ptr[36] = 0x5a;
+        trampoline_ptr[37] = 0x5e;
+        trampoline_ptr[38] = 0x5f;
 
-        // Add 8 to rsp (Fix the stack alignment)
-        trampoline_code[39] = 0x48;
-        trampoline_code[40] = 0x83;
-        trampoline_code[41] = 0xc4;
-        trampoline_code[42] = 0x08;
+        // Fix the stack alignment (add rsp, 8)
+        trampoline_ptr[39] = 0x48;
+        trampoline_ptr[40] = 0x83;
+        trampoline_ptr[41] = 0xc4;
+        trampoline_ptr[42] = 0x08;
 
         // Jump to the original function
         // mov rax, <address>
-        trampoline_code[43] = 0x48;
-        trampoline_code[44] = 0xb8;
-        *reinterpret_cast<void **>(&trampoline_code[45]) = originalFunction;
+        trampoline_ptr[43] = 0x48;
+        trampoline_ptr[44] = 0xb8;
+        *reinterpret_cast<void **>(&trampoline_ptr[45]) = originalFunction;
         // jmp rax
-        trampoline_code[53] = 0xff;
-        trampoline_code[54] = 0xe0;
+        trampoline_ptr[53] = 0xff;
+        trampoline_ptr[54] = 0xe0;
 
 #elif __aarch64__
         // TODO
@@ -323,16 +335,38 @@ private:
 #endif
 
         // Flush the instruction cache
-        __builtin___clear_cache((char *)trampoline, (char *)trampoline + 4096);
+        __builtin___clear_cache(reinterpret_cast<char *>(trampoline_ptr),
+                                reinterpret_cast<char *>(trampoline_ptr) + trampoline_code_size);
 
-        this->trampoline =  trampoline;
+        this->trampoline =  trampoline_ptr;
+    }
+
+    void *getTrampolineMemory(int size) {
+        if (currentPage == nullptr || currentPageOffset + size > 4096) {
+            currentPage = mmap(nullptr, 4096, PROT_READ | PROT_WRITE | PROT_EXEC,
+                               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+            if (currentPage == MAP_FAILED) {
+                ALOGE("Failed to allocate trampoline");
+                exit(1);
+            }
+
+            currentPageOffset = 0;
+        }
+
+        currentPageOffset += size;
+
+        return reinterpret_cast<char *>(currentPage) + currentPageOffset - size;
     }
 };
+
+void *NativeHook::currentPage = nullptr;
+int NativeHook::currentPageOffset = 0;
 
 
 void nativeFunctionHook() {
     NativeHook *nativeHook;
-    // Retrieve the nativeHook
+    // Retrieve the nativeHook object
 #ifdef __x86_64__
     __asm__ (
     "movq %%rbx, %0\n"
@@ -356,13 +390,34 @@ void transformNativeHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
                          jthread thread, jmethodID method, void *address, void **new_address_ptr) {
     char *method_name;
     char *method_signature;
+    jclass declaring_class;
+    char *class_name;
+
+    // Get the class name and method name
     jvmtiError error = jvmtiEnv->GetMethodName(method, &method_name, &method_signature, NULL);
-    ALOGI("Hooking function: %s\n", method_name);
-
-    if (strcmp(method_name, "toUpper") != 0)
+    if (error != JVMTI_ERROR_NONE) {
+        ALOGE("Failed to get method name");
         return;
+    }
+    error = jvmtiEnv->GetMethodDeclaringClass(method, &declaring_class);
+    if (error != JVMTI_ERROR_NONE) {
+        ALOGE("Failed to get declaring class");
+        return;
+    }
+    error = jvmtiEnv->GetClassSignature(declaring_class, &class_name, NULL);
+    if (error != JVMTI_ERROR_NONE) {
+        ALOGE("Failed to get class signature");
+        return;
+    }
 
-    NativeHook *nativeHook = new NativeHook(address, method_name, method_signature);
+    if (strncmp("Lorg/gts3/", class_name, 10) != 0) {
+        return;
+    }
+
+    ALOGI("Hooking native function: %s in class %s (signature: %s)\n", method_name, class_name,
+          method_signature);
+
+    NativeHook *nativeHook = new NativeHook(address, class_name, method_name, method_signature);
     *new_address_ptr = reinterpret_cast<void *>(nativeHook->trampoline);
 }
 
