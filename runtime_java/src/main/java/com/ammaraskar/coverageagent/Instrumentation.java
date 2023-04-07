@@ -16,6 +16,9 @@ public class Instrumentation {
 
     private static int previousBlock = 0;
 
+    private static int logIndex = -1;
+    private static int nextLogIndex = 0;
+
     // Initialize a tcp socket so a dump and reset of the coverage map can be requested.
     static {
         Instrumentation.startServer();
@@ -51,14 +54,28 @@ public class Instrumentation {
         // Read command from socket, 'd' or 'r'
         while (true) {
             int command = socket.getInputStream().read();
-            if (command == 'd') {
-                // dump
-                socket.getOutputStream().write(coverageMap);
-            } else if (command == 'r') {
-                // reset
-                coverageMap = new byte[COVERAGE_MAP_SIZE];
-            } else if (command == -1) {
-                break;
+            switch (command) {
+                case 'd':
+                    // dump
+                    socket.getOutputStream().write(coverageMap);
+                    break;
+                case 'r':
+                    // reset
+                    coverageMap = new byte[COVERAGE_MAP_SIZE];
+                    break;
+                case 't':
+                    // trace native
+                    int arg = socket.getInputStream().read();
+                    if (arg == 's') {
+                        // start
+                        logIndex = nextLogIndex++;
+                    } else if (arg == 'e') {
+                        // end
+                        logIndex = -1;
+                    }
+                    break;
+                case -1:
+                    return;
             }
         }
     }

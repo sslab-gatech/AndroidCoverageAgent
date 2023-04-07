@@ -34,6 +34,9 @@ CMRC_DECLARE(dex_resources);
 #define ALOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define ALOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
+#define NATIVE_LOG_DIR "/data/local/tmp/"
+#define NATIVE_LOG_FILE_BASE "native_trace.log"
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_ammaraskar_tool_test_MainActivity_stringFromJNI(
         JNIEnv *env,
@@ -201,6 +204,7 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
 
     //ALOGI("Transform hook called with name: %s", name);
     // Only instrument my own classes.
+    // TODO: Remove this
     if (strncmp("org/gts3/", name, 9) != 0) {
         return;
     }
@@ -215,7 +219,15 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
 }
 
 
-void nativeFunctionHook();
+void nativeFunctionHook(JNIEnv *env, void *nativeHook);
+
+std::string getPackageName() {
+    // Get the package name from /proc/self/cmdline
+    std::ifstream cmdline("/proc/self/cmdline");
+    std::string packageName;
+    std::getline(cmdline, packageName, '\0');
+    return packageName;
+}
 
 
 class NativeHook {
@@ -227,11 +239,43 @@ public:
                                               functionName(functionName),
                                               methodSignature(methodSignature) {
         createTrampoline();
+
     }
 
-    void instrumentation() {
+    void instrumentation(JNIEnv *env) {
         ALOGI("Instrumentation called for: %s in class %s (signature: %s)", functionName.c_str(),
               className.c_str(), methodSignature.c_str());
+
+        // Get the log index
+        instrumentationClass = env->FindClass("com/ammaraskar/coverageagent/Instrumentation");
+        if (instrumentationClass == nullptr) {
+            ALOGE("Could not find Instrumentation class");
+            return;
+        }
+        logIndexField = env->GetStaticFieldID(instrumentationClass, "logIndex", "I");
+        if (logIndexField == nullptr) {
+            ALOGE("Could not find logIndex field");
+            return;
+        }
+        int logIndex = env->GetStaticIntField(instrumentationClass, logIndexField);
+
+        ALOGI("Log index: %d", logIndex);
+
+        if (logIndex != -1) {
+            // Append call to the log file
+            std::string dirName = NATIVE_LOG_DIR + getPackageName() + "/";
+            std::string logFileName = dirName + NATIVE_LOG_FILE_BASE + "." + std::to_string(logIndex);
+
+            // Create the directory if it doesn't exist
+            std::filesystem::create_directory(dirName);
+
+            ALOGI("Writing to log file: %s", logFileName.c_str());
+
+            std::ofstream logFile;
+            logFile.open(logFileName, std::ios_base::app);
+            logFile << className << "," << functionName << "," << methodSignature << std::endl;
+            logFile.close();
+        }
     }
 
     // Contains the original function, the function name, the method signature, and the trampoline
@@ -291,9 +335,9 @@ private:
         trampoline_ptr[9] = 0x48;
         trampoline_ptr[10] = 0xb8;
         *reinterpret_cast<void **>(&trampoline_ptr[11]) = reinterpret_cast<void *>(&nativeFunctionHook);
-        // mov rbx, <this>
+        // mov rsi, <this>
         trampoline_ptr[19] = 0x48;
-        trampoline_ptr[20] = 0xbb;
+        trampoline_ptr[20] = 0xbe;
         *reinterpret_cast<void **>(&trampoline_ptr[21]) = reinterpret_cast<void *>(this);
         // call rax
         trampoline_ptr[29] = 0xff;
@@ -358,31 +402,18 @@ private:
 
         return reinterpret_cast<char *>(currentPage) + currentPageOffset - size;
     }
+
+    JNIEnv *env;
+    jclass instrumentationClass;
+    jfieldID logIndexField;
 };
 
 void *NativeHook::currentPage = nullptr;
 int NativeHook::currentPageOffset = 0;
 
 
-void nativeFunctionHook() {
-    NativeHook *nativeHook;
-    // Retrieve the nativeHook object
-#ifdef __x86_64__
-    __asm__ (
-    "movq %%rbx, %0\n"
-    : "=r" (nativeHook)
-    );
-#elif __aarch64__
-    // TODO
-#elif __i386__
-    // TODO
-#elif __arm__
-    // TODO
-#else
-#error "Unsupported architecture"
-#endif
-
-    nativeHook->instrumentation();
+void nativeFunctionHook(JNIEnv *env, void *nativeHook) {
+    reinterpret_cast<NativeHook *>(nativeHook)->instrumentation(env);
 }
 
 
@@ -407,10 +438,6 @@ void transformNativeHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
     error = jvmtiEnv->GetClassSignature(declaring_class, &class_name, NULL);
     if (error != JVMTI_ERROR_NONE) {
         ALOGE("Failed to get class signature");
-        return;
-    }
-
-    if (strncmp("Lorg/gts3/", class_name, 10) != 0) {
         return;
     }
 
