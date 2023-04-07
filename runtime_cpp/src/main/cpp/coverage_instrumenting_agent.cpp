@@ -472,6 +472,12 @@ jvmtiEnv *CreateJvmtiEnv(JavaVM *vm) {
     return jvmti_env;
 }
 
+bool hookNative(char *dir) {
+    // check if ".hook_native" exists in dir
+    std::string hookNativeFile = std::string(dir) + "/.hook_native";
+    return access(hookNativeFile.c_str(), F_OK) == 0;
+}
+
 // Early attachment (e.g. 'java -agent[lib|path]:filename.so').
 extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
                                                  void *reserved) {
@@ -493,7 +499,10 @@ extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
 
     jvmtiEventCallbacks callbacks = {0};
     callbacks.ClassFileLoadHook = transformHook;
-    callbacks.NativeMethodBind = transformNativeHook;
+    if (hookNative(input)) {
+        callbacks.NativeMethodBind = transformNativeHook;
+    }
+
     if (env->SetEventCallbacks(&callbacks, sizeof(callbacks)) != JVMTI_ERROR_NONE) {
         ALOGE("Unable to set jvmti file load hook");
         return JNI_ERR;
