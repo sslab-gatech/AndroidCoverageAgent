@@ -198,7 +198,7 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
     //ALOGI("transformHook(%s, loader=%px)", name, loader);
 
     // Don't instrument the instrumentation class
-    if (strcmp(name, "com/ammaraskar/coverageagent/Instrumentation") == 0) {
+    if (strncmp(name, "com/ammaraskar/coverageagent/Instrumentation", 44) == 0) {
         return;
     }
 
