@@ -3,8 +3,13 @@ package com.ammaraskar.coverageagent;
 import android.util.Log;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.net.ServerSocket;
 import java.net.Socket;
+
 
 /**
  * Coverage map algorithm based on https://lcamtuf.coredump.cx/afl/technical_details.txt
@@ -22,6 +27,33 @@ public class Instrumentation {
     // Initialize a tcp socket so a dump and reset of the coverage map can be requested.
     static {
         Instrumentation.startServer();
+    }
+
+    private static void waitForIdle() {
+        // Get the ActivityThread class
+        Class activityThreadClass = null;
+        try {
+            activityThreadClass = Class.forName("android.app.ActivityThread");
+            Method method = activityThreadClass.getMethod("waitForIdle", null);
+
+            method.invoke(null, null);
+        } catch (ClassNotFoundException | IllegalAccessException |
+                 NoSuchMethodException | InvocationTargetException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static void activateSynchronization() {
+        // Get the ActivityThread class
+        Class activityThreadClass = null;
+        try {
+            activityThreadClass = Class.forName("android.app.ActivityThread");
+            Field field = activityThreadClass.getField("synchronizing");
+
+            field.setBoolean(null, true);
+        } catch (ClassNotFoundException | IllegalAccessException | NoSuchFieldException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private static void startServer() {
@@ -51,17 +83,21 @@ public class Instrumentation {
     private static void acceptConnection(ServerSocket serverSocket) throws IOException {
         Socket socket = serverSocket.accept();
 
+        activateSynchronization();
+
         // Read command from socket, 'd' or 'r'
         while (true) {
             int command = socket.getInputStream().read();
             switch (command) {
                 case 'd':
                     // dump
+                    Instrumentation.waitForIdle();
                     socket.getOutputStream().write(coverageMap);
                     break;
                 case 'r':
                     // reset
                     coverageMap = new byte[COVERAGE_MAP_SIZE];
+                    socket.getOutputStream().write((byte)'d');
                     break;
                 case 't':
                     // trace native
