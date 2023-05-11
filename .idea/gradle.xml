@@ -10,6 +10,7 @@
         <option name="modules">
           <set>
             <option value="$PROJECT_DIR$" />
+            <option value="$PROJECT_DIR$/deployer" />
             <option value="$PROJECT_DIR$/runtime_cpp" />
             <option value="$PROJECT_DIR$/runtime_java" />
           </set>
