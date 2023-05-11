@@ -34,9 +34,9 @@ public class Instrumentation {
         Class activityThreadClass = null;
         try {
             activityThreadClass = Class.forName("android.app.ActivityThread");
-            Method method = activityThreadClass.getMethod("waitForIdle", null);
+            Method method = activityThreadClass.getMethod("waitForIdle");
 
-            method.invoke(null, null);
+            method.invoke(null);
         } catch (ClassNotFoundException | IllegalAccessException |
                  NoSuchMethodException | InvocationTargetException e) {
             throw new RuntimeException(e);
