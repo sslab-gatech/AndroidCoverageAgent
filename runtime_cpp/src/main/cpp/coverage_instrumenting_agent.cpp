@@ -536,6 +536,8 @@ extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
                                                  void *reserved) {
     ALOGI("========== Agent_OnLoad Start =======");
 
+    bool hook_native = hookNative(input);
+
     jvmtiEnv *env = CreateJvmtiEnv(vm);
     if (env == nullptr) {
         ALOGE("Unable to create jvmti env");
@@ -543,16 +545,21 @@ extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
     }
 
     jvmtiCapabilities caps = {0};
-    caps.can_generate_native_method_bind_events = 1;
     caps.can_retransform_classes = 1;
     if (env->AddCapabilities(&caps) != JVMTI_ERROR_NONE) {
-        ALOGE("Unable to add can_generate_native_method_bind_events capability");
+        ALOGE("Unable to add can_retransform_classes capability");
         return JNI_ERR;
     }
 
     jvmtiEventCallbacks callbacks = {0};
     callbacks.ClassFileLoadHook = transformHook;
-    if (hookNative(input)) {
+
+    if (hook_native) {
+        caps.can_generate_native_method_bind_events = 1;
+        if (env->AddCapabilities(&caps) != JVMTI_ERROR_NONE) {
+            ALOGE("Unable to add can_generate_native_method_bind_events capability");
+            return JNI_ERR;
+        }
         callbacks.NativeMethodBind = transformNativeHook;
     }
 
@@ -570,7 +577,8 @@ extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
         ALOGE("Unable to set event notification (JVMTI_EVENT_VM_INIT)");
         return JNI_ERR;
     }
-    if (env->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND, nullptr) !=
+    if (hook_native &&
+        env->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND, nullptr) !=
         JVMTI_ERROR_NONE) {
         ALOGE("Unable to set event notification (JVMTI_EVENT_NATIVE_METHOD_BIND)");
         return JNI_ERR;
