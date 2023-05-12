@@ -267,7 +267,7 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
 
     if (new_class) {
 #ifdef DUMP_DEX
-        dump(name, ".orig.dex", classData, classDataLen);
+//        dump(name, ".orig.dex", classData, classDataLen);
         dump(name, ".dex", new_class->first, new_class->second);
 #endif
         *newClassData = new_class->first;
