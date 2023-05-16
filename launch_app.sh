@@ -21,5 +21,8 @@ fi
 # Get the app name from the activity name
 APP_NAME=$(echo $ACTIVITY | cut -d '/' -f 1)
 
+# Stop the app
+$ADB shell am force-stop ${APP_NAME}
+
 # Create startup_agents directory
 $ADB shell am start-activity --attach-agent /data/user/0/${APP_NAME}/code_cache/startup_agents/libcoverage_instrumenting_agent.so ${ACTIVITY}
