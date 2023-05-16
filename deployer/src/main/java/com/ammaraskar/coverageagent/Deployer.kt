@@ -51,6 +51,12 @@ class Deployer(private val adbDeviceName: String?) {
         runAdbCommand(
                 "shell", "su", userId, "\"cp /data/local/tmp/${soName} $dataDir/code_cache/startup_agents/\"")
         println("[+] Library copied to $dataDir/code_cache/startup_agents/")
+
+        println("[i] Setting all dalvik runtimes to be debuggable")
+        runAdbCommand("shell", "su", "root", "setprop", "dalvik.vm.dex2oat-flags", "--debuggable")
+        println("[i] Restarting android...")
+        runAdbCommand("shell", "su", "root", "stop")
+        runAdbCommand("shell", "su", "root", "start")
     }
 
     private fun getDeviceArchitecture(adbDeviceName: String?): String {

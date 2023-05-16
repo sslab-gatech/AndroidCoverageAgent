@@ -43,9 +43,20 @@ gradle run --args="your.android.package.name"
 It will locate the app's data directory and push the coverage agent into the
 `DATA_DIR/code_cache/startup_agents` directory.
 
+It will also make all Android Runtimes on the phone debuggable by setting the
+`dalvik.vm.dex2oat-flags` property to `--debuggable`. After this, you should be able to launch
+the app while instrumenting coverage with:
+
+```bash
+am start-activity --attach-agent /path/to/libcoverage.so your.android.package.name/.app.MainActivity
+```
+
 ## Using with non-debuggable apps
 
-In order to instrument apps that don't have the `android:debuggable` attribute set, you must ensure
+**Note: this is probably wrong and not needed**
+
+If you are trying to instrument apps that don't have the `android:debuggable` attribute set and you
+want to use the `code_cache/startup_agents` to attach it on every launch. You must ensure
 you have root access on the device and `ro.debuggable` is set. The deployer can toggle the
 debuggable bit in the system process. Firstly, ensure that
 
