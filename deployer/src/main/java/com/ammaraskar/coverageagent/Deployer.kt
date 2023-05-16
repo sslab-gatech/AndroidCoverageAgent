@@ -4,11 +4,11 @@ import java.io.File
 import java.util.*
 import java.util.concurrent.TimeUnit
 
-class Deployer {
+class Deployer(private val adbDeviceName: String?) {
 
     private val soName = "libcoverage_instrumenting_agent.so"
 
-    fun deploy(packageName: String, adbDeviceName: String?) {
+    fun deploy(packageName: String) {
         println("Instrumenting app $packageName with coverage agent.")
         // Get the architecture of the device.
         val architecture = getDeviceArchitecture(adbDeviceName)
@@ -18,11 +18,11 @@ class Deployer {
         val library = File("runtime_cpp/build/intermediates/merged_native_libs/debug/out/lib/${architecture}/${soName}")
         println("[i] Using library: ${library.absolutePath}")
 
-        runAdbCommand(adbDeviceName, "push", library.absolutePath, "/data/local/tmp/")
+        runAdbCommand("push", library.absolutePath, "/data/local/tmp/")
         println("[+] Pushed library to /data/local/tmp/${soName}")
 
         println("[i] Trying to use run-as to copy to startup_agents")
-        val copyDestinationWithRunAs = tryToCopyLibraryWithRunAs(packageName, adbDeviceName)
+        val copyDestinationWithRunAs = tryToCopyLibraryWithRunAs(packageName)
         if (copyDestinationWithRunAs.isPresent) {
             println("[+] Library copied to ${copyDestinationWithRunAs.get()}")
             return
@@ -31,7 +31,7 @@ class Deployer {
         println("[x] run-as failed, using su permissions instead.")
 
         // Use dumpsys package to figure out the data directory and user id of the application.
-        val dumpSysOutput = runAdbCommand(adbDeviceName, "shell", "dumpsys", "package", packageName)
+        val dumpSysOutput = runAdbCommand("shell", "dumpsys", "package", packageName)
 
         var dataDir: String? = null
         var userId: String? = null
@@ -46,33 +46,33 @@ class Deployer {
         }
         println("[i] Grabbed app's dataDir=$dataDir and userId=$userId")
 
-        runAdbCommand(adbDeviceName,
+        runAdbCommand(
                 "shell", "su", userId, "\"mkdir -p $dataDir/code_cache/startup_agents/\"")
-        runAdbCommand(adbDeviceName,
+        runAdbCommand(
                 "shell", "su", userId, "\"cp /data/local/tmp/${soName} $dataDir/code_cache/startup_agents/\"")
         println("[+] Library copied to $dataDir/code_cache/startup_agents/")
     }
 
     private fun getDeviceArchitecture(adbDeviceName: String?): String {
-        return runAdbCommand(adbDeviceName, "shell", "getprop", "ro.product.cpu.abi").trim()
+        return runAdbCommand("shell", "getprop", "ro.product.cpu.abi").trim()
     }
 
-    private fun tryToCopyLibraryWithRunAs(packageName: String, adbDeviceName: String?): Optional<String> {
+    private fun tryToCopyLibraryWithRunAs(packageName: String): Optional<String> {
         return try {
-            runAdbCommand(adbDeviceName, "shell", "run-as", packageName, "mkdir -p code_cache/startup_agents/")
-            runAdbCommand(adbDeviceName, "shell", "run-as", packageName, "cp /data/local/tmp/${soName} code_cache/startup_agents/")
+            runAdbCommand("shell", "run-as", packageName, "mkdir -p code_cache/startup_agents/")
+            runAdbCommand("shell", "run-as", packageName, "cp /data/local/tmp/${soName} code_cache/startup_agents/")
 
-            Optional.of(runAdbCommand(adbDeviceName, "shell", "run-as", packageName, "pwd"))
+            Optional.of(runAdbCommand("shell", "run-as", packageName, "pwd"))
         } catch (e: RuntimeException) {
             Optional.empty()
         }
     }
 
-    private fun runAdbCommand(adbDeviceName: String?, vararg command: String): String {
+    fun runAdbCommand(vararg command: String): String {
         val adbCommand = mutableListOf("adb")
-        if (adbDeviceName != null) {
+        if (this.adbDeviceName != null) {
             adbCommand.add("-s")
-            adbCommand.add(adbDeviceName)
+            adbCommand.add(this.adbDeviceName)
         }
         adbCommand.addAll(command)
         return runCommandAndGetOutput(adbCommand)
@@ -100,9 +100,16 @@ class Deployer {
 
 fun main(args: Array<String>) {
     if (args.isEmpty()) {
-        println("Usage: Deployer <android-package-name> [adb-device-name]")
+        println("Usage: Deployer <android-package-name> [--device=adb-device-name] [--force-debuggable]")
         return
     }
 
-    Deployer().deploy(packageName = args[0], adbDeviceName = args.getOrNull(1))
+    val deviceName = args.filter { it.startsWith("--device=") }.map { it.replace("--device=", "") }.firstOrNull()
+
+    val deployer = Deployer(deviceName)
+    if ("--force-debuggable" in args) {
+        ForceAppDebuggable(deployer).makeDebuggable(packageName = args[0])
+    }
+
+    deployer.deploy(packageName = args[0])
 }

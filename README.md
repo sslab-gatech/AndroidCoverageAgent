@@ -36,12 +36,28 @@ ANDROID_SDK_ROOT=/path/to/sdk ./gradlew assemble
 The `deployer` folder in this project contains a convenience application to push the CoverageAgent
 to an Android device using `adb`.
 
-In order to instrument apps that don't have the `android:debuggable` attribute set, you must ensure
-you have root access on the device and `ro.debuggable` is set.
-
 ```bash
 gradle run --args="your.android.package.name"
 ```
 
 It will locate the app's data directory and push the coverage agent into the
 `DATA_DIR/code_cache/startup_agents` directory.
+
+## Using with non-debuggable apps
+
+In order to instrument apps that don't have the `android:debuggable` attribute set, you must ensure
+you have root access on the device and `ro.debuggable` is set. The deployer can toggle the
+debuggable bit in the system process. Firstly, ensure that
+
+```bash
+setprop persist.debug.dalvik.vm.jdwp.enabled 1
+```
+
+is set and restart the device after setting this property.
+
+Next, invoke the deployer with the `--force-debuggable` to have it deploy the coverage agent and
+flip the debug bit for you.
+
+```bash
+gradle run --args="your.android.package.name --force-debuggable"
+```
