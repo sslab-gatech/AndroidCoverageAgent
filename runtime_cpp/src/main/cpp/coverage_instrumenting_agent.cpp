@@ -109,7 +109,7 @@ public:
             std::uniform_int_distribution<> randomDistribution(0, COVERAGE_MAP_SIZE - 1);
 
             // If it contains a synchronized block, we only instrument the entry point.
-            if (containsSynchronizedBlock(cfg)) {
+            if (containsSynchronizedBlock(cfg) || cfg.basic_blocks.size() > 1000) {
                 // Only instrument the method entry point.
                 auto entry_block = *(cfg.basic_blocks.begin());
                 auto entry_instruction = entry_block.region.first;
