@@ -231,18 +231,18 @@ transformClass(const char *name, size_t classDataLen, const unsigned char *class
     return std::make_pair(newClassData, new_size);
 }
 
+std::filesystem::path dataDir;
+
 #ifdef DUMP_DEX
-std::string dataDir;
 void dump(const char *className, const char *suffix, const unsigned char *classData, jint classDataLen) {
     std::string classNameDots = className;
     std::replace(classNameDots.begin(), classNameDots.end(), '/', '.');
-    std::string path = dataDir + "/coverageagent/" + classNameDots + suffix;
+    std::filesystem::path outPath = dataDir / "coverageagent" / (classNameDots + suffix);
     // Create the directory
-    std::string dirname = path.substr(0, path.find_last_of('/'));
-    std::filesystem::create_directory(dirname);
+    std::filesystem::create_directory(outPath.parent_path());
 
-    ALOGD("Dumping %s to %s", classNameDots.c_str(), path.c_str());
-    FILE *f = fopen(path.c_str(), "wb");
+    ALOGD("Dumping %s to %s", classNameDots.c_str(), outPath.c_str());
+    FILE *f = fopen(outPath.c_str(), "wb");
     fwrite(classData, classDataLen, 1, f);
     fclose(f);
 }
@@ -296,7 +296,6 @@ public:
                                               functionName(functionName),
                                               methodSignature(methodSignature) {
         createTrampoline();
-
     }
 
     void instrumentation(JNIEnv *env) {
@@ -318,16 +317,17 @@ public:
 
         if (logIndex != -1) {
             // Append call to the log file
-            std::string dirName = NATIVE_LOG_DIR + getPackageName() + "/";
-            std::string logFileName = dirName + NATIVE_LOG_FILE_BASE + "." + std::to_string(logIndex);
+            std::filesystem::path dir = dataDir / "native_traces";
+            std::filesystem::path logFile = dir / (NATIVE_LOG_FILE_BASE "." + std::to_string(logIndex));
 
             // Create the directory if it doesn't exist
-            std::filesystem::create_directory(dirName);
+            std::filesystem::create_directory(dir);
+            ALOGD("Creating native trace: %s", logFile.c_str());
 
-            std::ofstream logFile;
-            logFile.open(logFileName, std::ios_base::app);
-            logFile << className << "," << functionName << "," << methodSignature << std::endl;
-            logFile.close();
+            std::ofstream logFileStream;
+            logFileStream.open(logFile, std::ios_base::app);
+            logFileStream << className << "," << functionName << "," << methodSignature << std::endl;
+            logFileStream.close();
         }
     }
 
@@ -536,6 +536,8 @@ extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
                                                  void *reserved) {
     ALOGI("========== Agent_OnLoad Start =======");
 
+    dataDir = std::filesystem::path(input);
+
     bool hook_native = hookNative(input);
 
     jvmtiEnv *env = CreateJvmtiEnv(vm);
@@ -552,7 +554,6 @@ extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
     }
 
     jvmtiEventCallbacks callbacks = {0};
-    callbacks.ClassFileLoadHook = transformHook;
 
     if (hook_native) {
         caps.can_generate_native_method_bind_events = 1;
@@ -561,35 +562,38 @@ extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
             return JNI_ERR;
         }
         callbacks.NativeMethodBind = transformNativeHook;
+    } else {
+        callbacks.ClassFileLoadHook = transformHook;
     }
 
     if (env->SetEventCallbacks(&callbacks, sizeof(callbacks)) != JVMTI_ERROR_NONE) {
         ALOGE("Unable to set jvmti file load hook");
         return JNI_ERR;
     }
-    if (env->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_FILE_LOAD_HOOK, nullptr) !=
-        JVMTI_ERROR_NONE) {
-        ALOGE("Unable to set event notification (JVMTI_EVENT_CLASS_FILE_LOAD_HOOK)");
-        return JNI_ERR;
-    }
-    if (env->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_INIT, nullptr) !=
-        JVMTI_ERROR_NONE) {
-        ALOGE("Unable to set event notification (JVMTI_EVENT_VM_INIT)");
-        return JNI_ERR;
-    }
-    if (hook_native &&
-        env->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND, nullptr) !=
-        JVMTI_ERROR_NONE) {
-        ALOGE("Unable to set event notification (JVMTI_EVENT_NATIVE_METHOD_BIND)");
-        return JNI_ERR;
+
+    if (hook_native) {
+        if (env->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND, nullptr) !=
+            JVMTI_ERROR_NONE) {
+            ALOGE("Unable to set event notification (JVMTI_EVENT_NATIVE_METHOD_BIND)");
+            return JNI_ERR;
+        }
+    } else {
+        if (env->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_FILE_LOAD_HOOK,
+                                          nullptr) !=
+            JVMTI_ERROR_NONE) {
+            ALOGE("Unable to set event notification (JVMTI_EVENT_CLASS_FILE_LOAD_HOOK)");
+            return JNI_ERR;
+        }
+        if (env->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_INIT, nullptr) !=
+            JVMTI_ERROR_NONE) {
+            ALOGE("Unable to set event notification (JVMTI_EVENT_VM_INIT)");
+            return JNI_ERR;
+        }
     }
 
     // Add the instrumentation class to the classpath. The input passed in to startup_agents is the
     // app's data directory.
     addInstrumentationClassToClassPath(env, input);
-#ifdef DUMP_DEX
-    dataDir = strdup(input);
-#endif
 
     ALOGI("========== Agent_OnLoad End =======");
 
