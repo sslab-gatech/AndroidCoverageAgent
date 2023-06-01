@@ -39,10 +39,8 @@ CMRC_DECLARE(dex_resources);
 #else
 // Only print debug output and dump dex files in debug builds.
 #define ALOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
-#define DUMP_DEX
 #endif
 
-#define NATIVE_LOG_DIR "/data/local/tmp/"
 #define NATIVE_LOG_FILE_BASE "native_trace.log"
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -193,18 +191,74 @@ private:
     ir::MethodDecl *instrumentationMethod = nullptr;
 };
 
-
-// Converts a class name to a type descriptor
-// (ex. "java.lang.String" to "Ljava/lang/String;")
-std::string classNameToDescriptor(const char *className) {
-    std::stringstream ss;
-    ss << "L";
-    for (auto p = className; *p != '\0'; ++p) {
-        ss << (*p == '.' ? '/' : *p);
+namespace util {
+    // Converts a class name to a type descriptor
+    // (ex. "java.lang.String" to "Ljava/lang/String;")
+    std::string classNameToDescriptor(const char *className) {
+        std::stringstream ss;
+        ss << "L";
+        for (auto p = className; *p != '\0'; ++p) {
+            ss << (*p == '.' ? '/' : *p);
+        }
+        ss << ";";
+        return ss.str();
     }
-    ss << ";";
-    return ss.str();
+
+    // Converts a class name to a fully qualified class name
+    // (ex. "java/lang/String" to "java.lang.String")
+    std::string classToFullyQualifiedClassName(const char *className) {
+        std::stringstream ss;
+        for (auto p = className; *p != '\0'; ++p) {
+            ss << (*p == '/' ? '.' : *p);
+        }
+        return ss.str();
+    }
 }
+
+std::filesystem::path dataDir;
+
+namespace cache {
+    auto suffix = ".dex";
+    auto dir = "code_cache/instrumented";
+
+    std::filesystem::path getCachedPath(const char *className) {
+        std::string classNameDots = util::classToFullyQualifiedClassName(className);
+        std::filesystem::path outPath = dataDir / dir / (classNameDots + suffix);
+        return outPath;
+    }
+
+    void put(const char *className, const unsigned char *classData, jint classDataLen) {
+        std::filesystem::path outPath = getCachedPath(className);
+        std::filesystem::create_directory(outPath.parent_path());
+
+        // Write to tmp file first
+        std::filesystem::path tmpPath = outPath;
+        tmpPath += ".tmp";
+        FILE *f = fopen(tmpPath.c_str(), "wb");
+        fwrite(classData, classDataLen, 1, f);
+        fclose(f);
+
+        // Move to actual file
+        std::filesystem::rename(tmpPath, outPath);
+    }
+
+    std::optional<std::pair<dex::u1 *, size_t>> get(const char *className) {
+        std::filesystem::path outPath = getCachedPath(className);
+        if (!std::filesystem::exists(outPath)) {
+            return std::nullopt;
+        }
+
+        ALOGD("Loading %s from %s", className, outPath.c_str());
+        FILE *f = fopen(outPath.c_str(), "rb");
+        fseek(f, 0, SEEK_END);
+        size_t size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        dex::u1 *data = new dex::u1[size];
+        fread(data, size, 1, f);
+        fclose(f);
+        return std::make_pair(data, size);
+    }
+};
 
 std::optional<std::pair<dex::u1 *, size_t>>
 transformClass(const char *name, size_t classDataLen, const unsigned char *classData,
@@ -213,7 +267,7 @@ transformClass(const char *name, size_t classDataLen, const unsigned char *class
     dex::Reader reader(classData, classDataLen);
 
     // Find the actual class amongst all the classData.
-    dex::u4 index = reader.FindClassIndex(classNameToDescriptor(name).c_str());
+    dex::u4 index = reader.FindClassIndex(util::classNameToDescriptor(name).c_str());
     assert(index != dex::kNoIndex);
     reader.CreateClassIr(index);
     std::shared_ptr<ir::DexFile> ir = reader.GetIr();
@@ -231,23 +285,6 @@ transformClass(const char *name, size_t classDataLen, const unsigned char *class
     return std::make_pair(newClassData, new_size);
 }
 
-std::filesystem::path dataDir;
-
-#ifdef DUMP_DEX
-void dump(const char *className, const char *suffix, const unsigned char *classData, jint classDataLen) {
-    std::string classNameDots = className;
-    std::replace(classNameDots.begin(), classNameDots.end(), '/', '.');
-    std::filesystem::path outPath = dataDir / "coverageagent" / (classNameDots + suffix);
-    // Create the directory
-    std::filesystem::create_directory(outPath.parent_path());
-
-    ALOGD("Dumping %s to %s", classNameDots.c_str(), outPath.c_str());
-    FILE *f = fopen(outPath.c_str(), "wb");
-    fwrite(classData, classDataLen, 1, f);
-    fclose(f);
-}
-#endif
-
 void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
                    jclass classBeingRedefined, jobject loader, const char *name,
                    jobject protectionDomain, jint classDataLen,
@@ -260,21 +297,27 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
         return;
     }
 
+    // Check cache
+    auto cached = cache::get(name);
+    if (cached) {
+        ALOGD("Found %s in cache", name);
+        *newClassData = cached->first;
+        *newClassDataLen = cached->second;
+        return;
+    }
+
     ALOGD("Transform hook called with name: %s", name);
 
     JvmtiAllocator allocator(jvmtiEnv);
     auto new_class = transformClass(name, classDataLen, classData, &allocator);
 
     if (new_class) {
-#ifdef DUMP_DEX
-//        dump(name, ".orig.dex", classData, classDataLen);
-        dump(name, ".dex", new_class->first, new_class->second);
-#endif
+        cache::put(name, new_class->first, new_class->second);
+
         *newClassData = new_class->first;
         *newClassDataLen = new_class->second;
     }
 }
-
 
 void nativeFunctionHook(JNIEnv *env, void *nativeHook);
 
@@ -285,7 +328,6 @@ std::string getPackageName() {
     std::getline(cmdline, packageName, '\0');
     return packageName;
 }
-
 
 class NativeHook {
 public:
@@ -321,8 +363,8 @@ public:
             std::filesystem::path logFile = dir / (NATIVE_LOG_FILE_BASE "." + std::to_string(logIndex));
 
             // Create the directory if it doesn't exist
-            std::filesystem::create_directory(dir);
             ALOGD("Creating native trace: %s", logFile.c_str());
+            std::filesystem::create_directory(dir);
 
             std::ofstream logFileStream;
             logFileStream.open(logFile, std::ios_base::app);
@@ -464,11 +506,9 @@ private:
 void *NativeHook::currentPage = nullptr;
 int NativeHook::currentPageOffset = 0;
 
-
 void nativeFunctionHook(JNIEnv *env, void *nativeHook) {
     reinterpret_cast<NativeHook *>(nativeHook)->instrumentation(env);
 }
-
 
 void transformNativeHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
                          jthread thread, jmethodID method, void *address, void **new_address_ptr) {
