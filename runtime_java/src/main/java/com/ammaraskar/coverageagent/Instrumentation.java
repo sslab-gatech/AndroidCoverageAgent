@@ -60,6 +60,7 @@ public class Instrumentation {
         ServerSocket serverSocket;
         try {
             serverSocket = new ServerSocket(6249);
+            serverSocket.setReuseAddress(true);
         } catch (IOException e) {
             Log.e("coverage", "Failed to initialize unix socket");
             e.printStackTrace();
