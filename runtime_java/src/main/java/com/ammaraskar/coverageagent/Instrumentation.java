@@ -21,8 +21,7 @@ public class Instrumentation {
 
     private static int previousBlock = 0;
 
-    private static int logIndex = -1;
-    private static int nextLogIndex = 0;
+    private static String traceFile = null;
 
     // Initialize a tcp socket so a dump and reset of the coverage map can be requested.
     static {
@@ -83,10 +82,15 @@ public class Instrumentation {
 
     private static void acceptConnection(ServerSocket serverSocket) throws IOException {
         Socket socket = serverSocket.accept();
+        Log.i("coverage", "Accepted connection from " + socket.getInetAddress().toString());
+        socket.setTcpNoDelay(true);
 
+        Log.i("coverage", "Activating synchronization");
         activateSynchronization();
 
-        // Read command from socket, 'd' or 'r'
+        Log.i("coverage", "Handling commands");
+
+        // Read command from socket, 'd', 'r', or 't'
         while (true) {
             int command = socket.getInputStream().read();
             switch (command) {
@@ -105,10 +109,20 @@ public class Instrumentation {
                     int arg = socket.getInputStream().read();
                     if (arg == 's') {
                         // start
-                        logIndex = nextLogIndex++;
+                        // Read the trace file name (until \n)
+                        StringBuilder sb = new StringBuilder();
+                        while (true) {
+                            int c = socket.getInputStream().read();
+                            if (c == '\n') {
+                                break;
+                            }
+                            sb.append((char)c);
+                        }
+                        Log.i("coverage", "Starting trace to " + sb.toString());
+                        traceFile = sb.toString();
                     } else if (arg == 'e') {
                         // end
-                        logIndex = -1;
+                        traceFile = null;
                     }
                     break;
                 case -1:

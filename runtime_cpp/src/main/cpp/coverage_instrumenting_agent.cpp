@@ -344,33 +344,46 @@ public:
         ALOGD("Instrumentation called for: %s in class %s (signature: %s)", functionName.c_str(),
               className.c_str(), methodSignature.c_str());
 
-        // Get the log index
+        // Get the trace file name from the Instrumentation class
         instrumentationClass = env->FindClass("com/ammaraskar/coverageagent/Instrumentation");
         if (instrumentationClass == nullptr) {
             ALOGE("Could not find Instrumentation class");
             return;
         }
-        logIndexField = env->GetStaticFieldID(instrumentationClass, "logIndex", "I");
-        if (logIndexField == nullptr) {
-            ALOGE("Could not find logIndex field");
+
+        jfieldID traceFileField = env->GetStaticFieldID(instrumentationClass, "traceFile",
+                                                        "Ljava/lang/String;");
+        if (traceFileField == nullptr) {
+            ALOGE("Could not get traceFile field ID");
             return;
         }
-        int logIndex = env->GetStaticIntField(instrumentationClass, logIndexField);
 
-        if (logIndex != -1) {
-            // Append call to the log file
-            std::filesystem::path dir = dataDir / "native_traces";
-            std::filesystem::path logFile = dir / (NATIVE_LOG_FILE_BASE "." + std::to_string(logIndex));
-
-            // Create the directory if it doesn't exist
-            ALOGD("Creating native trace: %s", logFile.c_str());
-            std::filesystem::create_directory(dir);
-
-            std::ofstream logFileStream;
-            logFileStream.open(logFile, std::ios_base::app);
-            logFileStream << className << "," << functionName << "," << methodSignature << std::endl;
-            logFileStream.close();
+        jstring traceFile = static_cast<jstring>(env->GetStaticObjectField(instrumentationClass,
+                                                                           traceFileField));
+        if (traceFile == nullptr) {
+            ALOGD("traceFile field is null, not logging native function calls");
+            return;
         }
+
+        const char *traceFileName = env->GetStringUTFChars(traceFile, nullptr);
+        if (traceFileName == nullptr) {
+            ALOGE("Could not get traceFile field contents");
+            return;
+        }
+
+        // Append call to the log file
+        std::filesystem::path dir = dataDir / "native_traces";
+        std::filesystem::path logFile = dir / traceFileName;
+
+        // Create the directory if it doesn't exist
+        ALOGD("Creating native trace: %s", logFile.c_str());
+        std::filesystem::create_directory(dir);
+
+        // Open the file and append the function name and signature
+        std::ofstream logFileStream;
+        logFileStream.open(logFile, std::ios_base::app);
+        logFileStream << className << "," << functionName << "," << methodSignature << std::endl;
+        logFileStream.close();
     }
 
     // Contains the original function, the function name, the method signature, and the trampoline
@@ -500,7 +513,6 @@ private:
 
     JNIEnv *env;
     jclass instrumentationClass;
-    jfieldID logIndexField;
 };
 
 void *NativeHook::currentPage = nullptr;
