@@ -118,8 +118,8 @@ public class Instrumentation {
                             }
                             sb.append((char)c);
                         }
-                        Log.i("coverage", "Starting trace to " + sb.toString());
                         traceFile = sb.toString();
+                        Log.i("coverage", "Starting trace to " + traceFile);
                     } else if (arg == 'e') {
                         // end
                         traceFile = null;
