@@ -345,7 +345,7 @@ public:
               className.c_str(), methodSignature.c_str());
 
         // Get the trace file name from the Instrumentation class
-        instrumentationClass = env->FindClass("com/ammaraskar/coverageagent/Instrumentation");
+        jclass instrumentationClass = env->FindClass("com/ammaraskar/coverageagent/Instrumentation");
         if (instrumentationClass == nullptr) {
             ALOGE("Could not find Instrumentation class");
             return;
@@ -376,7 +376,7 @@ public:
         std::filesystem::path logFile = dir / traceFileName;
 
         // Create the directory if it doesn't exist
-        ALOGD("Creating native trace: %s", logFile.c_str());
+        ALOGD("Logging native call to trace file: %s", logFile.c_str());
         std::filesystem::create_directory(dir);
 
         // Open the file and append the function name and signature
@@ -384,6 +384,8 @@ public:
         logFileStream.open(logFile, std::ios_base::app);
         logFileStream << className << "," << functionName << "," << methodSignature << std::endl;
         logFileStream.close();
+
+        env->ReleaseStringUTFChars(traceFile, traceFileName);
     }
 
     // Contains the original function, the function name, the method signature, and the trampoline
@@ -512,7 +514,6 @@ private:
     }
 
     JNIEnv *env;
-    jclass instrumentationClass;
 };
 
 void *NativeHook::currentPage = nullptr;
