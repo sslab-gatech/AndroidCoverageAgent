@@ -109,6 +109,8 @@ public:
                 auto entry_block = *(cfg.basic_blocks.begin());
                 auto entry_instruction = entry_block.region.first;
                 instrument(codeIr, scratch_reg, entry_instruction, randomDistribution(randomGen));
+
+                codeIr.Assemble();
                 continue;
             }
 
@@ -139,7 +141,6 @@ public:
 
                 instrument(codeIr, scratch_reg, trace_point, randomDistribution(randomGen));
             }
-
             codeIr.Assemble();
         }
 
@@ -386,8 +387,6 @@ extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
     // Add the instrumentation class to the classpath. The input passed in to startup_agents is the
     // app's data directory.
     addInstrumentationClassToClassPath(env, input);
-
-
 
     ALOGI("========== Agent_OnLoad End =======");
 
