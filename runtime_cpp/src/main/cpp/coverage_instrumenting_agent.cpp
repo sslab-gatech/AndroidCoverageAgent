@@ -7,6 +7,7 @@
 #include <jni.h>
 
 #include <unistd.h>
+#include <sys/stat.h>
 
 #include <android/log.h>
 
@@ -31,6 +32,13 @@ CMRC_DECLARE(dex_resources);
 #define LOG_TAG "ammaraskar"
 #define ALOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define ALOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+#ifdef NDEBUG
+#define ALOGD(...) ((void)0)
+#else
+// Only print debug output and dump dex files in debug builds.
+#define ALOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#endif
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_ammaraskar_tool_test_MainActivity_stringFromJNI(
@@ -60,6 +68,11 @@ public:
 
     bool transform() {
         for (auto &method : dexIr_->encoded_methods) {
+            ALOGD("checking method: %s.%s%s\n",
+                  method->decl->parent->Decl().c_str(),
+                  method->decl->name->c_str(),
+                  method->decl->prototype->Signature().c_str());
+
             // Do not look into abstract/bridge/native/synthetic methods.
             if ((method->access_flags &
                  (dex::kAccAbstract | dex::kAccBridge | dex::kAccNative | dex::kAccSynthetic)) !=
@@ -90,6 +103,14 @@ public:
             std::mt19937 randomGen(methodNameHash);
             std::uniform_int_distribution<> randomDistribution(0, COVERAGE_MAP_SIZE - 1);
 
+            // If it contains a synchronized block or too many blocks, we only instrument the entry
+            // point.
+            if (containsSynchronizedBlock(cfg) || cfg.basic_blocks.size() > 1000) {
+                auto entry_block = *(cfg.basic_blocks.begin());
+                auto entry_instruction = entry_block.region.first;
+                instrument(codeIr, scratch_reg, entry_instruction, randomDistribution(randomGen));
+                continue;
+            }
 
             // instrument each basic block entry point
             for (const auto &block : cfg.basic_blocks) {
@@ -111,23 +132,12 @@ public:
                     trace_point = trace_point->next;
                 }
 
-                // Generate a block_id
-                int basic_block_id = randomDistribution(randomGen);
+                // special case: 'move-exception' must be the first instruction in a catch block
+                if (opcode == dex::OP_MOVE_EXCEPTION) {
+                    trace_point = trace_point->next;
+                }
 
-                // scratch_reg = block_id
-                auto load_block_id = codeIr.Alloc<lir::Bytecode>();
-                load_block_id->opcode = dex::OP_CONST;
-                load_block_id->operands.push_back(codeIr.Alloc<lir::VReg>(scratch_reg));
-                load_block_id->operands.push_back(codeIr.Alloc<lir::Const32>(basic_block_id));
-                codeIr.instructions.InsertBefore(trace_point, load_block_id);
-
-                // call Instrumentation.reachedBlock(block_id)
-                auto trace_call = codeIr.Alloc<lir::Bytecode>();
-                trace_call->opcode = dex::OP_INVOKE_STATIC_RANGE;
-                trace_call->operands.push_back(codeIr.Alloc<lir::VRegRange>(scratch_reg, 1));
-                trace_call->operands.push_back(codeIr.Alloc<Method>(instrumentationMethod,
-                                                                    instrumentationMethod->orig_index));
-                codeIr.instructions.InsertBefore(trace_point, trace_call);
+                instrument(codeIr, scratch_reg, trace_point, randomDistribution(randomGen));
             }
 
             codeIr.Assemble();
@@ -137,32 +147,130 @@ public:
     }
 
 private:
+    static bool containsSynchronizedBlock(lir::ControlFlowGraph &cfg) {
+        // Returns true if the method contains a synchronized block.
+        for (const auto &block : cfg.basic_blocks) {
+            for (auto instr = block.region.first;
+                 instr != nullptr && instr != block.region.last; instr = instr->next) {
+                // Check all bytecode instructions.
+                lir::Bytecode *bytecode = dynamic_cast<lir::Bytecode *>(instr);
+                if (bytecode != nullptr) {
+                    auto opcode = bytecode->opcode;
+                    if (opcode == dex::OP_MONITOR_ENTER || opcode == dex::OP_MONITOR_EXIT ||
+                        opcode == dex::OP_MOVE_EXCEPTION) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    void instrument(lir::CodeIr &codeIr, dex::u4 scratch_reg, lir::Instruction *trace_point,
+                    int basic_block_id) {
+        // scratch_reg = block_id
+        auto load_block_id = codeIr.Alloc<lir::Bytecode>();
+        load_block_id->opcode = dex::OP_CONST;
+        load_block_id->operands.push_back(codeIr.Alloc<lir::VReg>(scratch_reg));
+        load_block_id->operands.push_back(codeIr.Alloc<lir::Const32>(basic_block_id));
+        codeIr.instructions.InsertBefore(trace_point, load_block_id);
+
+        // call Instrumentation.reachedBlock(block_id)
+        auto trace_call = codeIr.Alloc<lir::Bytecode>();
+        trace_call->opcode = dex::OP_INVOKE_STATIC_RANGE;
+        trace_call->operands.push_back(codeIr.Alloc<lir::VRegRange>(scratch_reg, 1));
+        trace_call->operands.push_back(codeIr.Alloc<Method>(instrumentationMethod,
+                                                            instrumentationMethod->orig_index));
+        codeIr.instructions.InsertBefore(trace_point, trace_call);
+    }
+
     std::shared_ptr<ir::DexFile> dexIr_;
     ir::Builder builder;
     ir::MethodDecl *instrumentationMethod = nullptr;
 };
 
-
-// Converts a class name to a type descriptor
-// (ex. "java.lang.String" to "Ljava/lang/String;")
-std::string classNameToDescriptor(const char *className) {
-    std::stringstream ss;
-    ss << "L";
-    for (auto p = className; *p != '\0'; ++p) {
-        ss << (*p == '.' ? '/' : *p);
+namespace util {
+    // Converts a class name to a type descriptor
+    // (ex. "java.lang.String" to "Ljava/lang/String;")
+    std::string classNameToDescriptor(const char *className) {
+        std::stringstream ss;
+        ss << "L";
+        for (auto p = className; *p != '\0'; ++p) {
+            ss << (*p == '.' ? '/' : *p);
+        }
+        ss << ";";
+        return ss.str();
     }
-    ss << ";";
-    return ss.str();
+
+    // Converts a class name to a fully qualified class name
+    // (ex. "java/lang/String" to "java.lang.String")
+    std::string classToFullyQualifiedClassName(const char *className) {
+        std::stringstream ss;
+        for (auto p = className; *p != '\0'; ++p) {
+            ss << (*p == '/' ? '.' : *p);
+        }
+        return ss.str();
+    }
 }
+
+std::string dataDir;
+
+namespace cache {
+    auto suffix = ".dex";
+    auto dir = "code_cache/instrumented";
+
+    std::string getCachedPath(const char *className) {
+        std::string classNameDots = util::classToFullyQualifiedClassName(className);
+        return dataDir + "/" + dir + "/" + classNameDots + suffix;
+    }
+
+    void put(const char *className, const unsigned char *classData, jint classDataLen) {
+        std::string outPath = getCachedPath(className);
+
+        // Set up directory
+        mkdir((dataDir + "/").c_str(), 0777);
+        mkdir((dataDir + "/" + dir).c_str(), 0777);
+
+        // Write to tmp file first
+        std::string tmpPath = outPath;
+        tmpPath += ".tmp";
+        FILE *f = fopen(tmpPath.c_str(), "wb");
+        fwrite(classData, classDataLen, 1, f);
+        fclose(f);
+
+        if (rename(tmpPath.c_str(), outPath.c_str()) != 0) {
+            perror("rename");
+        }
+    }
+
+    std::optional<std::pair<dex::u1 *, size_t>> get(const char *className) {
+        std::string outPath = getCachedPath(className);
+        ALOGD("Loading %s from %s", className, outPath.c_str());
+
+        FILE *f = fopen(outPath.c_str(), "rb");
+
+        if (f == nullptr) {
+            return std::nullopt;
+        }
+
+        fseek(f, 0, SEEK_END);
+        size_t size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        dex::u1 *data = new dex::u1[size];
+        fread(data, size, 1, f);
+        fclose(f);
+        return std::make_pair(data, size);
+    }
+};
 
 std::optional<std::pair<dex::u1 *, size_t>>
 transformClass(const char *name, size_t classDataLen, const unsigned char *classData,
                dex::Writer::Allocator *allocator) {
-    ALOGI("Trying to instrument: %s", name);
+    ALOGD("Trying to instrument class: %s", name);
     dex::Reader reader(classData, classDataLen);
 
     // Find the actual class amongst all the classData.
-    dex::u4 index = reader.FindClassIndex(classNameToDescriptor(name).c_str());
+    dex::u4 index = reader.FindClassIndex(util::classNameToDescriptor(name).c_str());
     assert(index != dex::kNoIndex);
     reader.CreateClassIr(index);
     std::shared_ptr<ir::DexFile> ir = reader.GetIr();
@@ -187,21 +295,28 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
                    unsigned char **newClassData) {
     //ALOGI("transformHook(%s, loader=%px)", name, loader);
 
-    // Don't instruemnt the instrumentation class
-    if (strcmp(name, "com/ammaraskar/coverageagent/Instrumentation") == 0) {
+    // Don't instrument the instrumentation class
+    if (strncmp(name, "com/ammaraskar/coverageagent/Instrumentation", 44) == 0) {
         return;
     }
 
-    //ALOGI("Transform hook called with name: %s", name);
-    // Only instrument my own classes.
-    if (strncmp("com/ammaraskar/", name, 14) != 0) {
+    // Check cache
+    auto cached = cache::get(name);
+    if (cached) {
+        ALOGD("Found %s in cache", name);
+        *newClassData = cached->first;
+        *newClassDataLen = cached->second;
         return;
     }
+
+    ALOGD("Transform hook called with name: %s", name);
 
     JvmtiAllocator allocator(jvmtiEnv);
     auto new_class = transformClass(name, classDataLen, classData, &allocator);
 
     if (new_class) {
+        cache::put(name, new_class->first, new_class->second);
+
         *newClassData = new_class->first;
         *newClassDataLen = new_class->second;
     }
@@ -234,6 +349,10 @@ jvmtiEnv *CreateJvmtiEnv(JavaVM *vm) {
 // Early attachment (e.g. 'java -agent[lib|path]:filename.so').
 extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
                                                  void *reserved) {
+    ALOGI("========== Agent_OnLoad Start =======");
+
+    dataDir = std::string(input);
+
     jvmtiEnv *env = CreateJvmtiEnv(vm);
     if (env == nullptr) {
         ALOGE("Unable to create jvmti env");
@@ -270,7 +389,7 @@ extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
 
 
 
-    ALOGI("==========Agent_OnAttach=======");
+    ALOGI("========== Agent_OnLoad End =======");
 
     return JNI_OK;
 }

@@ -128,16 +128,16 @@ class Buffer {
   }
 
   size_t PushULeb128(dex::u4 value) {
-    dex::u1 tmp[4];
+    dex::u1 tmp[5];
     dex::u1* end = dex::WriteULeb128(tmp, value);
-    assert(end > tmp && end - tmp <= 4);
+    assert(end > tmp && end - tmp <= 5);
     return Push(tmp, end - tmp);
   }
 
   size_t PushSLeb128(dex::s4 value) {
-    dex::u1 tmp[4];
+    dex::u1 tmp[5];
     dex::u1* end = dex::WriteSLeb128(tmp, value);
-    assert(end > tmp && end - tmp <= 4);
+    assert(end > tmp && end - tmp <= 5);
     return Push(tmp, end - tmp);
   }
 
