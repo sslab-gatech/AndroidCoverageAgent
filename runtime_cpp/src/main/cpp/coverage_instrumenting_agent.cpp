@@ -85,6 +85,18 @@ namespace util {
         }
         return ss.str();
     }
+
+    // Returns the set of classes that should be ignored
+    std::set<std::string> getIgnoredClasses() {
+        std::set<std::string> ignoredClasses;
+        std::ifstream ignoredClassesFile(dataDir / ".ignored_classes");
+        std::string line;
+        while (std::getline(ignoredClassesFile, line)) {
+            std::replace(line.begin(), line.end(), '.', '/');
+            ignoredClasses.insert(line);
+        }
+        return ignoredClasses;
+    }
 }
 
 
@@ -307,8 +319,20 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
                    unsigned char **newClassData) {
     //ALOGI("transformHook(%s, loader=%px)", name, loader);
 
+    // Don't instrument android classes
+    if (strncmp(name, "android", 7) == 0) {
+        return;
+    }
+
     // Don't instrument the instrumentation class
     if (strncmp(name, "com/ammaraskar/coverageagent/Instrumentation", 44) == 0) {
+        return;
+    }
+
+    // Don't instrument app-specific classes listed in the ignore list
+    auto ignoreList = util::getIgnoredClasses();
+    if (ignoreList.find(name) != ignoreList.end()) {
+        ALOGD("Ignoring class %s", name);
         return;
     }
 
@@ -320,8 +344,6 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
         *newClassDataLen = cached->second;
         return;
     }
-
-    ALOGD("Transform hook called with name: %s", name);
 
     JvmtiAllocator allocator(jvmtiEnv);
     auto new_class = transformClass(name, classDataLen, classData, &allocator);
