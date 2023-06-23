@@ -23,6 +23,8 @@ public class Instrumentation {
 
     private static String traceFile = null;
 
+    private static boolean synchronization = false;
+
     // Initialize a tcp socket so a dump and reset of the coverage map can be requested.
     static {
         Instrumentation.startServer();
@@ -50,6 +52,23 @@ public class Instrumentation {
             Field field = activityThreadClass.getField("synchronizing");
 
             field.setBoolean(null, true);
+
+            synchronization = true;
+        } catch (ClassNotFoundException | IllegalAccessException | NoSuchFieldException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static void deactivateSynchronization() {
+        // Get the ActivityThread class
+        Class activityThreadClass = null;
+        try {
+            activityThreadClass = Class.forName("android.app.ActivityThread");
+            Field field = activityThreadClass.getField("synchronizing");
+
+            field.setBoolean(null, false);
+
+            synchronization = false;
         } catch (ClassNotFoundException | IllegalAccessException | NoSuchFieldException e) {
             throw new RuntimeException(e);
         }
@@ -85,18 +104,18 @@ public class Instrumentation {
         Log.i("coverage", "Accepted connection from " + socket.getInetAddress().toString());
         socket.setTcpNoDelay(true);
 
-        Log.i("coverage", "Activating synchronization");
-        activateSynchronization();
-
         Log.i("coverage", "Handling commands");
 
-        // Read command from socket, 'd', 'r', or 't'
+        // Read command from socket, 'd', 'r', 't', or 's'
         while (true) {
             int command = socket.getInputStream().read();
+            Log.i("coverage", "Received command: " + command);
             switch (command) {
                 case 'd':
                     // dump
-                    Instrumentation.waitForIdle();
+                    if (synchronization) {
+                        Instrumentation.waitForIdle();
+                    }
                     socket.getOutputStream().write(coverageMap);
                     break;
                 case 'r':
@@ -106,8 +125,8 @@ public class Instrumentation {
                     break;
                 case 't':
                     // trace native
-                    int arg = socket.getInputStream().read();
-                    if (arg == 's') {
+                    int trace_arg = socket.getInputStream().read();
+                    if (trace_arg == 's') {
                         // start
                         // Read the trace file name (until \n)
                         StringBuilder sb = new StringBuilder();
@@ -120,11 +139,25 @@ public class Instrumentation {
                         }
                         traceFile = sb.toString();
                         Log.i("coverage", "Starting trace to " + traceFile);
-                    } else if (arg == 'e') {
+                    } else if (trace_arg == 'e') {
                         // end
                         traceFile = null;
                     }
                     break;
+                case 's':
+                    // synchronization
+                    int sync_arg = socket.getInputStream().read();
+                    if (sync_arg == 's') {
+                        // start synchronization
+                        Log.i("coverage", "Activating synchronization");
+                        activateSynchronization();
+                    } else if (sync_arg == 'e') {
+                        // end synchronization
+                        Log.i("coverage", "Deactivating synchronization");
+                        deactivateSynchronization();
+                    }
+                    break;
+
                 case -1:
                     return;
             }
