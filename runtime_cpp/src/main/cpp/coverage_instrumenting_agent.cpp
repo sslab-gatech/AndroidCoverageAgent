@@ -56,6 +56,90 @@ Java_com_ammaraskar_tool_test_MainActivity_stringFromJNI(
 
 using namespace lir;
 
+std::filesystem::path dataDir;
+
+
+/*
+ * UTILS
+ */
+
+namespace util {
+    // Converts a class name to a type descriptor
+    // (ex. "java.lang.String" to "Ljava/lang/String;")
+    std::string classNameToDescriptor(const char *className) {
+        std::stringstream ss;
+        ss << "L";
+        for (auto p = className; *p != '\0'; ++p) {
+            ss << (*p == '.' ? '/' : *p);
+        }
+        ss << ";";
+        return ss.str();
+    }
+
+    // Converts a class name to a fully qualified class name
+    // (ex. "java/lang/String" to "java.lang.String")
+    std::string classToFullyQualifiedClassName(const char *className) {
+        std::stringstream ss;
+        for (auto p = className; *p != '\0'; ++p) {
+            ss << (*p == '/' ? '.' : *p);
+        }
+        return ss.str();
+    }
+}
+
+
+/*
+ * DEX CACHE
+ */
+
+namespace cache {
+    auto suffix = ".dex";
+    auto dir = "code_cache/instrumented";
+
+    std::filesystem::path getCachedPath(const char *className) {
+        std::string classNameDots = util::classToFullyQualifiedClassName(className);
+        std::filesystem::path outPath = dataDir / dir / (classNameDots + suffix);
+        return outPath;
+    }
+
+    void put(const char *className, const unsigned char *classData, jint classDataLen) {
+        std::filesystem::path outPath = getCachedPath(className);
+        std::filesystem::create_directory(outPath.parent_path());
+
+        // Write to tmp file first
+        std::filesystem::path tmpPath = outPath;
+        tmpPath += ".tmp";
+        FILE *f = fopen(tmpPath.c_str(), "wb");
+        fwrite(classData, classDataLen, 1, f);
+        fclose(f);
+
+        // Move to actual file
+        std::filesystem::rename(tmpPath, outPath);
+    }
+
+    std::optional<std::pair<dex::u1 *, size_t>> get(const char *className) {
+        std::filesystem::path outPath = getCachedPath(className);
+        if (!std::filesystem::exists(outPath)) {
+            return std::nullopt;
+        }
+
+        ALOGD("Loading %s from %s", className, outPath.c_str());
+        FILE *f = fopen(outPath.c_str(), "rb");
+        fseek(f, 0, SEEK_END);
+        size_t size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        dex::u1 *data = new dex::u1[size];
+        fread(data, size, 1, f);
+        fclose(f);
+        return std::make_pair(data, size);
+    }
+}
+
+
+/*
+ * JAVA INSTRUMENTATION
+ */
+
 class Transformer {
 public:
     explicit Transformer(std::shared_ptr<ir::DexFile> dexIr) : dexIr_(dexIr), builder(dexIr) {
@@ -191,75 +275,6 @@ private:
     ir::MethodDecl *instrumentationMethod = nullptr;
 };
 
-namespace util {
-    // Converts a class name to a type descriptor
-    // (ex. "java.lang.String" to "Ljava/lang/String;")
-    std::string classNameToDescriptor(const char *className) {
-        std::stringstream ss;
-        ss << "L";
-        for (auto p = className; *p != '\0'; ++p) {
-            ss << (*p == '.' ? '/' : *p);
-        }
-        ss << ";";
-        return ss.str();
-    }
-
-    // Converts a class name to a fully qualified class name
-    // (ex. "java/lang/String" to "java.lang.String")
-    std::string classToFullyQualifiedClassName(const char *className) {
-        std::stringstream ss;
-        for (auto p = className; *p != '\0'; ++p) {
-            ss << (*p == '/' ? '.' : *p);
-        }
-        return ss.str();
-    }
-}
-
-std::filesystem::path dataDir;
-
-namespace cache {
-    auto suffix = ".dex";
-    auto dir = "code_cache/instrumented";
-
-    std::filesystem::path getCachedPath(const char *className) {
-        std::string classNameDots = util::classToFullyQualifiedClassName(className);
-        std::filesystem::path outPath = dataDir / dir / (classNameDots + suffix);
-        return outPath;
-    }
-
-    void put(const char *className, const unsigned char *classData, jint classDataLen) {
-        std::filesystem::path outPath = getCachedPath(className);
-        std::filesystem::create_directory(outPath.parent_path());
-
-        // Write to tmp file first
-        std::filesystem::path tmpPath = outPath;
-        tmpPath += ".tmp";
-        FILE *f = fopen(tmpPath.c_str(), "wb");
-        fwrite(classData, classDataLen, 1, f);
-        fclose(f);
-
-        // Move to actual file
-        std::filesystem::rename(tmpPath, outPath);
-    }
-
-    std::optional<std::pair<dex::u1 *, size_t>> get(const char *className) {
-        std::filesystem::path outPath = getCachedPath(className);
-        if (!std::filesystem::exists(outPath)) {
-            return std::nullopt;
-        }
-
-        ALOGD("Loading %s from %s", className, outPath.c_str());
-        FILE *f = fopen(outPath.c_str(), "rb");
-        fseek(f, 0, SEEK_END);
-        size_t size = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        dex::u1 *data = new dex::u1[size];
-        fread(data, size, 1, f);
-        fclose(f);
-        return std::make_pair(data, size);
-    }
-};
-
 std::optional<std::pair<dex::u1 *, size_t>>
 transformClass(const char *name, size_t classDataLen, const unsigned char *classData,
                dex::Writer::Allocator *allocator) {
@@ -318,6 +333,11 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
         *newClassDataLen = new_class->second;
     }
 }
+
+
+/*
+ * NATIVE INSTRUMENTATION
+ */
 
 void nativeFunctionHook(JNIEnv *env, void *nativeHook);
 
@@ -554,6 +574,10 @@ void transformNativeHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
     *new_address_ptr = reinterpret_cast<void *>(nativeHook->trampoline);
 }
 
+/*
+ * OTHER HELPER FUNCTIONS
+ */
+
 void addInstrumentationClassToClassPath(jvmtiEnv *jvmtiEnv, char* appDataDir) {
     auto dexFile = cmrc::dex_resources::get_filesystem().open("gen/Instrumentation.dex");
 
@@ -583,6 +607,11 @@ bool hookNative(char *dir) {
     std::string hookNativeFile = std::string(dir) + "/.hook_native";
     return access(hookNativeFile.c_str(), F_OK) == 0;
 }
+
+
+/*
+ * AGENT ENTRY POINT
+ */
 
 // Early attachment (e.g. 'java -agent[lib|path]:filename.so').
 extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
