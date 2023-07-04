@@ -108,6 +108,8 @@ namespace cache {
     auto suffix = ".dex";
     auto dir = "code_cache/instrumented";
 
+    std::mutex fs_mutex;
+
     std::filesystem::path getCachedPath(const char *className) {
         std::string classNameDots = util::classToFullyQualifiedClassName(className);
         std::filesystem::path outPath = dataDir / dir / (classNameDots + suffix);
@@ -115,6 +117,8 @@ namespace cache {
     }
 
     void put(const char *className, const unsigned char *classData, jint classDataLen) {
+        const std::lock_guard<std::mutex> lock(fs_mutex);
+
         std::filesystem::path outPath = getCachedPath(className);
         std::filesystem::create_directory(outPath.parent_path());
 
