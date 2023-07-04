@@ -200,6 +200,15 @@ public:
             lir::CodeIr codeIr(method.get(), dexIr_);
             lir::ControlFlowGraph cfg(&codeIr, false);
 
+            // If it contains a synchronized block, we can't instrument it.
+            if (containsSynchronizedBlock(cfg)) {
+                ALOGD("method contains synchronized block: %s.%s%s\n",
+                      method->decl->parent->Decl().c_str(),
+                      method->decl->name->c_str(),
+                      method->decl->prototype->Signature().c_str());
+                continue;
+            }
+
             slicer::AllocateScratchRegs alloc_regs(1);
 
             alloc_regs.Apply(&codeIr);
@@ -220,8 +229,7 @@ public:
             std::mt19937 randomGen(methodNameHash);
             std::uniform_int_distribution<> randomDistribution(0, COVERAGE_MAP_SIZE - 1);
 
-            // If it contains a synchronized block, we only instrument the entry point.
-            if (containsSynchronizedBlock(cfg) || cfg.basic_blocks.size() > 1000) {
+            if (cfg.basic_blocks.size() > 1000) {
                 // Only instrument the method entry point.
                 auto entry_block = *(cfg.basic_blocks.begin());
                 auto entry_instruction = entry_block.region.first;
