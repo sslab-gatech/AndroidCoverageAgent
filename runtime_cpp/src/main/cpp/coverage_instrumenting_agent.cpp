@@ -140,12 +140,26 @@ namespace cache {
         }
 
         ALOGD("Loading %s from %s", className, outPath.c_str());
+
         FILE *f = fopen(outPath.c_str(), "rb");
+        if (f == nullptr) {
+            ALOGE("Failed to open %s", outPath.c_str());
+            return std::nullopt;
+        }
+
         fseek(f, 0, SEEK_END);
+
         size_t size = ftell(f);
+        if (size == 0) {
+            ALOGE("File %s is empty", outPath.c_str());
+            return std::nullopt;
+        }
+
         fseek(f, 0, SEEK_SET);
+
         dex::u1 *data = new dex::u1[size];
         fread(data, size, 1, f);
+
         fclose(f);
         return std::make_pair(data, size);
     }
