@@ -25,6 +25,7 @@
 #include "slicer/control_flow_graph.h"
 
 #include <cmrc/cmrc.hpp>
+#include <dlfcn.h>
 
 // Declare the embedded files used to carry along the dex.
 CMRC_DECLARE(dex_resources);
@@ -106,11 +107,11 @@ namespace util {
 
 namespace cache {
     auto suffix = ".dex";
-    auto dir = "code_cache/instrumented";
+    auto cacheDir = "code_cache/instrumented";
 
     std::filesystem::path getCachedPath(const char *className) {
         std::string classNameDots = util::classToFullyQualifiedClassName(className);
-        std::filesystem::path outPath = dataDir / dir / (classNameDots + suffix);
+        std::filesystem::path outPath = dataDir / cacheDir / (classNameDots + suffix);
         return outPath;
     }
 
@@ -336,6 +337,10 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
 
     // Don't instrument android classes
     if (strncmp(name, "android", 7) == 0) {
+        return;
+    }
+
+    if (strncmp(name, "com.google.android.gms", 22) == 0) {
         return;
     }
 
@@ -617,11 +622,11 @@ void transformNativeHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
  * OTHER HELPER FUNCTIONS
  */
 
-void addInstrumentationClassToClassPath(jvmtiEnv *jvmtiEnv, char* appDataDir) {
+void addInstrumentationClassToClassPath(jvmtiEnv *jvmtiEnv) {
     auto dexFile = cmrc::dex_resources::get_filesystem().open("gen/Instrumentation.dex");
 
     // Put the dexFile on disk so we can add it to the classpath.
-    std::string outputFileName = std::string(appDataDir) + "/code_cache/instrumentation.dex";
+    std::filesystem::path outputFileName = dataDir / "code_cache" / "instrumentation.dex";
     ALOGI("Writing to file: %s", outputFileName.c_str());
     std::ofstream outputDexFile(outputFileName, std::ofstream::binary);
     std::copy(dexFile.begin(), dexFile.end(), std::ostreambuf_iterator<char>(outputDexFile));
@@ -641,9 +646,23 @@ jvmtiEnv *CreateJvmtiEnv(JavaVM *vm) {
     return jvmti_env;
 }
 
-bool hookNative(char *dir) {
-    // check if ".hook_native" exists in dir
-    std::string hookNativeFile = std::string(dir) + "/.hook_native";
+// Function to get the data directory of the app
+std::filesystem::path getDataDir() {
+    // Get the path of this library
+    Dl_info info;
+    dladdr(reinterpret_cast<void *>(getDataDir), &info);
+    std::filesystem::path libPath(info.dli_fname);
+
+    // Get the path of the app's data directory
+    std::string appDataDir = libPath.parent_path().parent_path().parent_path();
+
+    return std::filesystem::path(appDataDir);
+}
+
+
+bool hookNative() {
+    // check if ".hook_native" exists in the data dir
+    std::filesystem::path hookNativeFile = dataDir / ".hook_native";
     return access(hookNativeFile.c_str(), F_OK) == 0;
 }
 
@@ -657,13 +676,10 @@ extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
                                                  void *reserved) {
     ALOGI("========== Agent_OnLoad Start =======");
 
-    ALOGI("Input: %s", input);
-
-    dataDir = std::filesystem::path(input);
-
+    dataDir = getDataDir();
     ALOGI("Data dir: %s", dataDir.c_str());
 
-    bool hook_native = hookNative(input);
+    bool hook_native = hookNative();
 
     jvmtiEnv *jvmti_env = CreateJvmtiEnv(vm);
     if (jvmti_env == nullptr) {
@@ -716,9 +732,8 @@ extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
         }
     }
 
-    // Add the instrumentation class to the classpath. The input passed in to startup_agents is the
-    // app's data directory.
-    addInstrumentationClassToClassPath(jvmti_env, input);
+    // Add the instrumentation class to the classpath.
+    addInstrumentationClassToClassPath(jvmti_env);
 
     ALOGI("========== Agent_OnLoad End =======");
 
