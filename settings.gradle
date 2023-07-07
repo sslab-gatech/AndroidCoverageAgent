@@ -1,3 +1,4 @@
 rootProject.name = "CoverageAgent"
 include ':runtime_java'
 include ':runtime_cpp'
+include ':deployer'

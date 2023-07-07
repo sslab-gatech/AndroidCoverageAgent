@@ -7,6 +7,7 @@
 #include <jni.h>
 
 #include <unistd.h>
+#include <sys/stat.h>
 
 #include <android/log.h>
 
@@ -41,7 +42,6 @@ CMRC_DECLARE(dex_resources);
 #define ALOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #endif
 
-#define NATIVE_LOG_FILE_BASE "native_trace.log"
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_ammaraskar_tool_test_MainActivity_stringFromJNI(
@@ -108,8 +108,6 @@ namespace cache {
     auto suffix = ".dex";
     auto dir = "code_cache/instrumented";
 
-    std::mutex fs_mutex;
-
     std::filesystem::path getCachedPath(const char *className) {
         std::string classNameDots = util::classToFullyQualifiedClassName(className);
         std::filesystem::path outPath = dataDir / dir / (classNameDots + suffix);
@@ -117,53 +115,43 @@ namespace cache {
     }
 
     void put(const char *className, const unsigned char *classData, jint classDataLen) {
-        const std::lock_guard<std::mutex> lock(fs_mutex);
-
         std::filesystem::path outPath = getCachedPath(className);
+
+        // Set up directory
+        std::filesystem::create_directory(outPath.parent_path().parent_path());
         std::filesystem::create_directory(outPath.parent_path());
 
         // Write to tmp file first
-        std::filesystem::path tmpPath = outPath;
+        std::string tmpPath = outPath;
         tmpPath += ".tmp";
         FILE *f = fopen(tmpPath.c_str(), "wb");
         fwrite(classData, classDataLen, 1, f);
         fclose(f);
 
-        // Move to actual file
-        std::filesystem::rename(tmpPath, outPath);
+        if (rename(tmpPath.c_str(), outPath.c_str()) != 0) {
+            perror("rename");
+        }
     }
 
     std::optional<std::pair<dex::u1 *, size_t>> get(const char *className) {
-        std::filesystem::path outPath = getCachedPath(className);
-        if (!std::filesystem::exists(outPath)) {
-            return std::nullopt;
-        }
-
+        std::string outPath = getCachedPath(className);
         ALOGD("Loading %s from %s", className, outPath.c_str());
 
         FILE *f = fopen(outPath.c_str(), "rb");
+
         if (f == nullptr) {
-            ALOGE("Failed to open %s", outPath.c_str());
             return std::nullopt;
         }
 
         fseek(f, 0, SEEK_END);
-
         size_t size = ftell(f);
-        if (size == 0) {
-            ALOGE("File %s is empty", outPath.c_str());
-            return std::nullopt;
-        }
-
         fseek(f, 0, SEEK_SET);
-
         dex::u1 *data = new dex::u1[size];
         fread(data, size, 1, f);
-
         fclose(f);
         return std::make_pair(data, size);
     }
-}
+};
 
 
 /*
@@ -186,9 +174,9 @@ public:
     bool transform() {
         for (auto &method : dexIr_->encoded_methods) {
             ALOGD("checking method: %s.%s%s\n",
-                   method->decl->parent->Decl().c_str(),
-                   method->decl->name->c_str(),
-                   method->decl->prototype->Signature().c_str());
+                  method->decl->parent->Decl().c_str(),
+                  method->decl->name->c_str(),
+                  method->decl->prototype->Signature().c_str());
 
             // Do not look into abstract/bridge/native/synthetic methods.
             if ((method->access_flags &
@@ -234,36 +222,37 @@ public:
                 auto entry_block = *(cfg.basic_blocks.begin());
                 auto entry_instruction = entry_block.region.first;
                 instrument(codeIr, scratch_reg, entry_instruction, randomDistribution(randomGen));
-            } else {
-                // Instrument each basic block entry point.
-                for (const auto &block: cfg.basic_blocks) {
-                    // Find first bytecode in the basic block.
-                    lir::Instruction *trace_point = nullptr;
-                    for (auto instr = block.region.first; instr != nullptr; instr = instr->next) {
-                        trace_point = dynamic_cast<lir::Bytecode *>(instr);
-                        if (trace_point != nullptr || instr == block.region.last) {
-                            break;
-                        }
-                    }
-
-                    SLICER_CHECK_NE(trace_point, nullptr);
-                    // special case: don't separate 'move-result-<kind>' from the preceding invoke
-                    auto opcode = dynamic_cast<lir::Bytecode *>(trace_point)->opcode;
-                    if (opcode == dex::OP_MOVE_RESULT ||
-                        opcode == dex::OP_MOVE_RESULT_WIDE ||
-                        opcode == dex::OP_MOVE_RESULT_OBJECT) {
-                        trace_point = trace_point->next;
-                    }
-
-                    // special case: 'move-exception' must be the first instruction in a catch block
-                    if (opcode == dex::OP_MOVE_EXCEPTION) {
-                        trace_point = trace_point->next;
-                    }
-
-                    instrument(codeIr, scratch_reg, trace_point, randomDistribution(randomGen));
-                }
+                codeIr.Assemble();
+                continue;
             }
 
+            // instrument each basic block entry point
+            for (const auto &block : cfg.basic_blocks) {
+                // find first bytecode in the basic block
+                lir::Instruction *trace_point = nullptr;
+                for (auto instr = block.region.first; instr != nullptr; instr = instr->next) {
+                    trace_point = dynamic_cast<lir::Bytecode *>(instr);
+                    if (trace_point != nullptr || instr == block.region.last) {
+                        break;
+                    }
+                }
+
+                SLICER_CHECK_NE(trace_point, nullptr);
+                // special case: don't separate 'move-result-<kind>' from the preceding invoke
+                auto opcode = dynamic_cast<lir::Bytecode *>(trace_point)->opcode;
+                if (opcode == dex::OP_MOVE_RESULT ||
+                    opcode == dex::OP_MOVE_RESULT_WIDE ||
+                    opcode == dex::OP_MOVE_RESULT_OBJECT) {
+                    trace_point = trace_point->next;
+                }
+
+                // special case: 'move-exception' must be the first instruction in a catch block
+                if (opcode == dex::OP_MOVE_EXCEPTION) {
+                    trace_point = trace_point->next;
+                }
+
+                instrument(codeIr, scratch_reg, trace_point, randomDistribution(randomGen));
+            }
             codeIr.Assemble();
         }
 
@@ -370,6 +359,8 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
         *newClassDataLen = cached->second;
         return;
     }
+
+    ALOGD("Transform hook called with name: %s", name);
 
     JvmtiAllocator allocator(jvmtiEnv);
     auto new_class = transformClass(name, classDataLen, classData, &allocator);
@@ -666,19 +657,23 @@ extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
                                                  void *reserved) {
     ALOGI("========== Agent_OnLoad Start =======");
 
+    ALOGI("Input: %s", input);
+
     dataDir = std::filesystem::path(input);
+
+    ALOGI("Data dir: %s", dataDir.c_str());
 
     bool hook_native = hookNative(input);
 
-    jvmtiEnv *env = CreateJvmtiEnv(vm);
-    if (env == nullptr) {
-        ALOGE("Unable to create jvmti env");
+    jvmtiEnv *jvmti_env = CreateJvmtiEnv(vm);
+    if (jvmti_env == nullptr) {
+        ALOGE("Unable to create jvmti jvmti_env");
         return JNI_ERR;
     }
 
     jvmtiCapabilities caps = {0};
     caps.can_retransform_classes = 1;
-    if (env->AddCapabilities(&caps) != JVMTI_ERROR_NONE) {
+    if (jvmti_env->AddCapabilities(&caps) != JVMTI_ERROR_NONE) {
         ALOGE("Unable to add can_retransform_classes capability");
         return JNI_ERR;
     }
@@ -687,7 +682,7 @@ extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
 
     if (hook_native) {
         caps.can_generate_native_method_bind_events = 1;
-        if (env->AddCapabilities(&caps) != JVMTI_ERROR_NONE) {
+        if (jvmti_env->AddCapabilities(&caps) != JVMTI_ERROR_NONE) {
             ALOGE("Unable to add can_generate_native_method_bind_events capability");
             return JNI_ERR;
         }
@@ -696,25 +691,25 @@ extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
         callbacks.ClassFileLoadHook = transformHook;
     }
 
-    if (env->SetEventCallbacks(&callbacks, sizeof(callbacks)) != JVMTI_ERROR_NONE) {
+    if (jvmti_env->SetEventCallbacks(&callbacks, sizeof(callbacks)) != JVMTI_ERROR_NONE) {
         ALOGE("Unable to set jvmti file load hook");
         return JNI_ERR;
     }
 
     if (hook_native) {
-        if (env->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND, nullptr) !=
+        if (jvmti_env->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND, nullptr) !=
             JVMTI_ERROR_NONE) {
             ALOGE("Unable to set event notification (JVMTI_EVENT_NATIVE_METHOD_BIND)");
             return JNI_ERR;
         }
     } else {
-        if (env->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_FILE_LOAD_HOOK,
-                                          nullptr) !=
+        if (jvmti_env->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_FILE_LOAD_HOOK,
+                                                nullptr) !=
             JVMTI_ERROR_NONE) {
             ALOGE("Unable to set event notification (JVMTI_EVENT_CLASS_FILE_LOAD_HOOK)");
             return JNI_ERR;
         }
-        if (env->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_INIT, nullptr) !=
+        if (jvmti_env->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_INIT, nullptr) !=
             JVMTI_ERROR_NONE) {
             ALOGE("Unable to set event notification (JVMTI_EVENT_VM_INIT)");
             return JNI_ERR;
@@ -723,7 +718,7 @@ extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
 
     // Add the instrumentation class to the classpath. The input passed in to startup_agents is the
     // app's data directory.
-    addInstrumentationClassToClassPath(env, input);
+    addInstrumentationClassToClassPath(jvmti_env, input);
 
     ALOGI("========== Agent_OnLoad End =======");
 
