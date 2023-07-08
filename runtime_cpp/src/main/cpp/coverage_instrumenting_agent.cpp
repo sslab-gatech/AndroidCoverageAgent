@@ -58,6 +58,7 @@ Java_com_ammaraskar_tool_test_MainActivity_stringFromJNI(
 using namespace lir;
 
 std::filesystem::path dataDir;
+std::string packageName;
 
 
 /*
@@ -97,6 +98,27 @@ namespace util {
             ignoredClasses.insert(line);
         }
         return ignoredClasses;
+    }
+
+    // Function to get the data directory of the app
+    std::filesystem::path getDataDir() {
+        // Get the path of this library
+        Dl_info info;
+        dladdr(reinterpret_cast<void *>(getDataDir), &info);
+        std::filesystem::path libPath(info.dli_fname);
+
+        // Get the path of the app's data directory
+        std::string appDataDir = libPath.parent_path().parent_path().parent_path();
+
+        return std::filesystem::path(appDataDir);
+    }
+
+    std::string getPackageName() {
+        // Get the package name from /proc/self/cmdline
+        std::ifstream cmdline("/proc/self/cmdline");
+        std::string packageName;
+        std::getline(cmdline, packageName, '\0');
+        return packageName;
     }
 }
 
@@ -335,12 +357,26 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
                    unsigned char **newClassData) {
     //ALOGI("transformHook(%s, loader=%px)", name, loader);
 
+    if (!loader) {
+        // Skip if the loader is unknown
+        return;
+    }
+
     // Don't instrument android classes
     if (strncmp(name, "android", 7) == 0) {
         return;
     }
 
-    if (strncmp(name, "com.google.android.gms", 22) == 0) {
+    // Ignore this class if it's not from the application package
+    jclass loaderClass = env->GetObjectClass(loader);
+    // TODO: Use getDexPaths on the DexPathList of the class loader
+    jmethodID loaderToString = env->GetMethodID(loaderClass, "toString",
+                                                "()Ljava/lang/String;");
+    jstring loaderString = (jstring) env->CallObjectMethod(loader, loaderToString);
+    const char *loaderChars = env->GetStringUTFChars(loaderString, NULL);
+    env->ReleaseStringUTFChars(loaderString, loaderChars);
+    if (strstr(loaderChars, packageName.c_str()) == NULL) {
+        ALOGD("Loader: Skipping %s", name);
         return;
     }
 
@@ -349,7 +385,7 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
         return;
     }
 
-    // Don't instrument app-specific classes listed in the ignore list
+    // Don't instrument classes listed in the ignore list
     auto ignoreList = util::getIgnoredClasses();
     if (ignoreList.find(name) != ignoreList.end()) {
         ALOGD("Ignoring class %s", name);
@@ -384,14 +420,6 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
  */
 
 void nativeFunctionHook(JNIEnv *env, void *nativeHook);
-
-std::string getPackageName() {
-    // Get the package name from /proc/self/cmdline
-    std::ifstream cmdline("/proc/self/cmdline");
-    std::string packageName;
-    std::getline(cmdline, packageName, '\0');
-    return packageName;
-}
 
 class NativeHook {
 public:
@@ -646,19 +674,6 @@ jvmtiEnv *CreateJvmtiEnv(JavaVM *vm) {
     return jvmti_env;
 }
 
-// Function to get the data directory of the app
-std::filesystem::path getDataDir() {
-    // Get the path of this library
-    Dl_info info;
-    dladdr(reinterpret_cast<void *>(getDataDir), &info);
-    std::filesystem::path libPath(info.dli_fname);
-
-    // Get the path of the app's data directory
-    std::string appDataDir = libPath.parent_path().parent_path().parent_path();
-
-    return std::filesystem::path(appDataDir);
-}
-
 
 bool hookNative() {
     // check if ".hook_native" exists in the data dir
@@ -676,7 +691,8 @@ extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
                                                  void *reserved) {
     ALOGI("========== Agent_OnLoad Start =======");
 
-    dataDir = getDataDir();
+    dataDir = util::getDataDir();
+    packageName = util::getPackageName();
     ALOGI("Data dir: %s", dataDir.c_str());
 
     bool hook_native = hookNative();
