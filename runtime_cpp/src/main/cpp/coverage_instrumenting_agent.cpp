@@ -374,11 +374,11 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
                                                 "()Ljava/lang/String;");
     jstring loaderString = (jstring) env->CallObjectMethod(loader, loaderToString);
     const char *loaderChars = env->GetStringUTFChars(loaderString, NULL);
-    env->ReleaseStringUTFChars(loaderString, loaderChars);
     if (strstr(loaderChars, packageName.c_str()) == NULL) {
         ALOGD("Loader: Skipping %s", name);
         return;
     }
+    env->ReleaseStringUTFChars(loaderString, loaderChars);
 
     // Don't instrument the instrumentation class
     if (strncmp(name, "com/ammaraskar/coverageagent/Instrumentation", 44) == 0) {
