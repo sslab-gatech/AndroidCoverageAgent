@@ -8,9 +8,9 @@ import java.lang.IllegalArgumentException
 /**
  * Local port to forward the jdwp connection to.
  */
-const val HOST_PORT = 8690;
+const val HOST_PORT = 8690
 
-const val PACKAGE_SETTINGS_CLASS = "com.android.server.pm.PackageSetting";
+const val PACKAGE_SETTINGS_CLASS = "com.android.server.pm.PackageSetting"
 
 /**
  * Forces an app to be debuggable by connecting to Android with a jvm debugger and altering the
@@ -44,14 +44,14 @@ class ForceAppDebuggable(private var deployer: Deployer) {
         val j = JDIScript(vm)
 
         val packageSettingsClass = j.vm().classesByName(PACKAGE_SETTINGS_CLASS).firstOrNull()
-                ?: throw IllegalStateException("$PACKAGE_SETTINGS_CLASS not found in system server java process");
+                ?: throw IllegalStateException("$PACKAGE_SETTINGS_CLASS not found in system server java process")
 
-        var nameField: Field? = null;
-        var flagsField: Field? = null;
+        var nameField: Field? = null
+        var flagsField: Field? = null
 
         for (field in packageSettingsClass.allFields()) {
             if (field.name().equals("name", ignoreCase = true) || field.name().equals("mName", ignoreCase = true)) {
-                nameField = field;
+                nameField = field
             }
             if (field.name().equals("pkgFlags", ignoreCase = true) || field.name().equals("mPkgFlags", ignoreCase = true)) {
                 flagsField = field
@@ -67,13 +67,13 @@ class ForceAppDebuggable(private var deployer: Deployer) {
         }
 
         for (settings in packageSettingsClass.instances(512)) {
-            val instancePackageName = getJdiValueAsString(settings.getValue(nameField));
+            val instancePackageName = getJdiValueAsString(settings.getValue(nameField))
             //println("Package name: $instancePackageName")
             if (!instancePackageName.equals(packageName, ignoreCase = true)) {
-                continue;
+                continue
             }
 
-            val flags = getJdiValueAsLong(settings.getValue(flagsField));
+            val flags = getJdiValueAsLong(settings.getValue(flagsField))
             println("[+] Found package settings, changing flags.")
             println("Instance - ${settings.uniqueID()}, mName=$instancePackageName flags=$flags")
 
@@ -89,14 +89,14 @@ class ForceAppDebuggable(private var deployer: Deployer) {
 
     private fun getJdiValueAsLong(value: Value): Int {
         if (value is IntegerValue) {
-            return value.value();
+            return value.value()
         }
         throw IllegalArgumentException("getJdiValueAsLong called on value of type ${value.type()}")
     }
 
     private fun getJdiValueAsString(value: Value): String {
         if (value is StringReference) {
-            return value.value();
+            return value.value()
         }
         throw IllegalArgumentException("getJdiValueAsString called on value of type ${value.type()}")
     }
