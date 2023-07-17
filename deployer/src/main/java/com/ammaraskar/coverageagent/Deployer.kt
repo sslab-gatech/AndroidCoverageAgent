@@ -47,9 +47,9 @@ class Deployer(private val adbDeviceName: String?) {
         println("[i] Grabbed app's dataDir=$dataDir and userId=$userId")
 
         runAdbCommand(
-                "shell", "su", userId, "\"mkdir -p $dataDir/code_cache/startup_agents/\"")
+                "shell", "su", userId, "mkdir -p $dataDir/code_cache/startup_agents/")
         runAdbCommand(
-                "shell", "su", userId, "\"cp /data/local/tmp/${soName} $dataDir/code_cache/startup_agents/\"")
+                "shell", "su", userId, "cp /data/local/tmp/${soName} $dataDir/code_cache/startup_agents/")
         println("[+] Library copied to $dataDir/code_cache/startup_agents/")
 
         println("[i] Setting all dalvik runtimes to be debuggable")

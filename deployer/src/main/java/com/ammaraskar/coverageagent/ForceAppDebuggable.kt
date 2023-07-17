@@ -53,8 +53,8 @@ class ForceAppDebuggable(private var deployer: Deployer) {
             if (field.name().equals("name", ignoreCase = true) || field.name().equals("mName", ignoreCase = true)) {
                 nameField = field;
             }
-            if (field.name().equals("pkgFlags", ignoreCase = true)) {
-                flagsField = field;
+            if (field.name().equals("pkgFlags", ignoreCase = true) || field.name().equals("mPkgFlags", ignoreCase = true)) {
+                flagsField = field
             }
         }
 
