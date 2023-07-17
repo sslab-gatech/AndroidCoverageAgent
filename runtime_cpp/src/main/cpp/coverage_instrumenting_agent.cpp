@@ -58,7 +58,6 @@ Java_com_ammaraskar_tool_test_MainActivity_stringFromJNI(
 using namespace lir;
 
 std::filesystem::path dataDir;
-std::string packageName;
 
 
 /*
@@ -113,10 +112,14 @@ namespace util {
         return std::filesystem::path(appDataDir);
     }
 
+    std::string packageName;
     std::string getPackageName() {
         // Get the package name from /proc/self/cmdline
+        if (!packageName.empty()) {
+            return packageName;
+        }
+
         std::ifstream cmdline("/proc/self/cmdline");
-        std::string packageName;
         std::getline(cmdline, packageName, '\0');
         return packageName;
     }
@@ -374,7 +377,7 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
                                                 "()Ljava/lang/String;");
     jstring loaderString = (jstring) env->CallObjectMethod(loader, loaderToString);
     const char *loaderChars = env->GetStringUTFChars(loaderString, NULL);
-    if (strstr(loaderChars, packageName.c_str()) == NULL) {
+    if (strstr(loaderChars, util::getPackageName().c_str()) == NULL) {
         ALOGD("Loader: Skipping %s", name);
         return;
     }
@@ -692,7 +695,6 @@ extern "C" JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *input,
     ALOGI("========== Agent_OnLoad Start =======");
 
     dataDir = util::getDataDir();
-    packageName = util::getPackageName();
     ALOGI("Data dir: %s", dataDir.c_str());
 
     bool hook_native = hookNative();
