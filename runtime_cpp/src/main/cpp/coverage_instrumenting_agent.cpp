@@ -377,6 +377,8 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
                                                 "()Ljava/lang/String;");
     jstring loaderString = (jstring) env->CallObjectMethod(loader, loaderToString);
     const char *loaderChars = env->GetStringUTFChars(loaderString, NULL);
+    ALOGD("Loader: %s", loaderChars);
+    ALOGD("Package: %s", util::getPackageName().c_str());
     if (strstr(loaderChars, util::getPackageName().c_str()) == NULL) {
         ALOGD("Loader: Skipping %s", name);
         return;
@@ -623,7 +625,7 @@ void transformNativeHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
     char *method_name;
     char *method_signature;
     jclass declaring_class;
-    char *class_name;
+    char *class_signature;
 
     // Get the class name and method name
     jvmtiError error = jvmtiEnv->GetMethodName(method, &method_name, &method_signature, NULL);
@@ -636,17 +638,38 @@ void transformNativeHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
         ALOGE("Failed to get declaring class");
         return;
     }
-    error = jvmtiEnv->GetClassSignature(declaring_class, &class_name, NULL);
+    error = jvmtiEnv->GetClassSignature(declaring_class, &class_signature, NULL);
     if (error != JVMTI_ERROR_NONE) {
         ALOGE("Failed to get class signature");
+        return;
+    }
+
+    // Don't instrument classes listed in the ignore list
+    char *class_name;
+    if (class_signature[0] == 'L' && class_signature[strlen(class_signature) - 1] == ';') {
+        // Remove 'L' and trailing ';'
+        class_name = strndup(class_signature + 1, strlen(class_signature) - 2);
+    } else {
+        class_name = strdup(class_signature);
+    }
+
+    auto ignoreList = util::getIgnoredClasses();
+    if (ignoreList.find(class_name) != ignoreList.end()) {
+        ALOGD("Ignoring class %s", class_name);
         return;
     }
 
     ALOGI("Hooking native function: %s in class %s (signature: %s)\n", method_name, class_name,
           method_signature);
 
-    NativeHook *nativeHook = new NativeHook(address, class_name, method_name, method_signature);
+    NativeHook *nativeHook = new NativeHook(address, class_name, strdup(method_name),
+                                            strdup(method_signature));
     *new_address_ptr = reinterpret_cast<void *>(nativeHook->trampoline);
+
+    // Free resources
+    jvmtiEnv->Deallocate(reinterpret_cast<unsigned char *>(method_name));
+    jvmtiEnv->Deallocate(reinterpret_cast<unsigned char *>(method_signature));
+    jvmtiEnv->Deallocate(reinterpret_cast<unsigned char *>(class_signature));
 }
 
 /*
