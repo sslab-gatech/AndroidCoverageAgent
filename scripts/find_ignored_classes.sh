@@ -51,7 +51,7 @@ while true; do
   # Poll logcat for verifier errors or idle message
   while true; do
     sleep 1
-    rejected_classes=$(adb logcat -d | grep "Verifier rejected class" | grep "$PACKAGE_NAME" | sed -e "s/.*Verifier rejected class \([^:]*\): \(.*\)/\1/")
+    rejected_classes=$(adb logcat -d | grep "Verifier rejected class" | sed -e "s/.*Verifier rejected class \([^:]*\): \(.*\)/\1/" | sort -u)
     anr_message=$(adb logcat -d | grep "ANR in $PACKAGE_NAME")
     idle_message=$(adb logcat -d | grep "Reporting idle of ActivityRecord" | grep "$PACKAGE_NAME")
     if [ -n "$rejected_classes" ]; then
