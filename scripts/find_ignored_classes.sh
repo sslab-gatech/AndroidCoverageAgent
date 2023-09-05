@@ -34,6 +34,16 @@ if ! adb shell pm list packages | grep -q "$PACKAGE_NAME"; then
   exit 1
 fi
 
+# Check if the coverage agent is installed for the app
+COVERAGE_AGENT="/data/data/${PACKAGE_NAME}/code_cache/startup_agents/libcoverage_instrumenting_agent.so"
+if ! adb shell ls "$COVERAGE_AGENT" > /dev/null 2>&1; then
+  echo "Coverage agent is not installed for the application"
+  exit 1
+fi
+
+# Set the app as debug app
+adb shell am set-debug-app --persistent "$PACKAGE_NAME"
+
 # Extract main activity name
 MAIN_ACTIVITY=$(adb shell cmd package resolve-activity --brief "$PACKAGE_NAME" | tail -n 1)
 
@@ -46,7 +56,7 @@ while true; do
   adb logcat -c
 
   # Start application with coverage agent
-  adb shell am start-activity --attach-agent /data/data/"$PACKAGE_NAME"/code_cache/startup_agents/libcoverage_instrumenting_agent.so "$MAIN_ACTIVITY"
+  adb shell am start-activity --attach-agent "${COVERAGE_AGENT}" "$MAIN_ACTIVITY"
 
   # Poll logcat for verifier errors or idle message
   while true; do
