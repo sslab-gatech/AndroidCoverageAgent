@@ -64,6 +64,7 @@ while true; do
     rejected_classes=$(adb logcat -d | grep "Verifier rejected class" | sed -e "s/.*Verifier rejected class \([^:]*\): \(.*\)/\1/" | sort -u)
     anr_message=$(adb logcat -d | grep "ANR in $PACKAGE_NAME")
     idle_message=$(adb logcat -d | grep "Reporting idle of ActivityRecord" | grep "$PACKAGE_NAME")
+    last_instrumentation_message=$(adb logcat -d | grep "ammaraskar" | tail -n 1)
     if [ -n "$rejected_classes" ]; then
       echo "Found rejected classes: $rejected_classes"
       # Extract class name from the message
@@ -74,13 +75,20 @@ while true; do
       done
       break
     elif [ -n "$anr_message" ]; then
-      echo "ANR detected, restarting application"
-      break
+      echo "Error: ANR detected, this should not be possible with the app being set as debug app"
+      exit 1
     elif [ -n "$idle_message" ]; then
-      echo "Found idle message: $idle_message"
-      # Application started without verifier errors
-      echo "Application started without verifier errors"
-      break 2
+      #echo "Found idle message: $idle_message"
+
+      # Check if last instrumentation message is older than 20 seconds (only in
+      # this case, we assume that the app started correctly)
+      last_instrumentation_timestamp=$(echo "$last_instrumentation_message" | sed -e "s/^\([0-9\-]*\) \([0-9:]*\)\..*$/\1 \2/")
+      last_instrumentation_timestamp=$(date -d "2023-$last_instrumentation_timestamp" +%s)
+      current_timestamp=$(date +%s)
+      if [ "$((current_timestamp - last_instrumentation_timestamp))" -gt 20 ]; then
+        echo "Application started without verifier errors"
+        break 2
+      fi
     fi
   done
 done
