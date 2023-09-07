@@ -96,6 +96,9 @@ namespace util {
             std::replace(line.begin(), line.end(), '.', '/');
             ignoredClasses.insert(line);
         }
+        // Also, ignore 'J/N'
+        ignoredClasses.insert("J/N");
+        ignoredClasses.insert("com/facebook/react/bridge");
         return ignoredClasses;
     }
 
@@ -377,8 +380,8 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
                                                 "()Ljava/lang/String;");
     jstring loaderString = (jstring) env->CallObjectMethod(loader, loaderToString);
     const char *loaderChars = env->GetStringUTFChars(loaderString, NULL);
-    ALOGD("Loader: %s", loaderChars);
-    ALOGD("Package: %s", util::getPackageName().c_str());
+//    ALOGD("Loader: %s", loaderChars);
+//    ALOGD("Package: %s", util::getPackageName().c_str());
     if (strstr(loaderChars, util::getPackageName().c_str()) == NULL) {
         ALOGD("Loader: Skipping %s", name);
         return;
