@@ -96,9 +96,10 @@ namespace util {
             std::replace(line.begin(), line.end(), '.', '/');
             ignoredClasses.insert(line);
         }
+
         // Also, ignore 'J/N'
         ignoredClasses.insert("J/N");
-        ignoredClasses.insert("com/facebook/react/bridge");
+
         return ignoredClasses;
     }
 
@@ -395,9 +396,11 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
 
     // Don't instrument classes listed in the ignore list
     auto ignoreList = util::getIgnoredClasses();
-    if (ignoreList.find(name) != ignoreList.end()) {
-        ALOGD("Ignoring class %s", name);
-        return;
+    for (auto &prefix : ignoreList) {
+        if (strncmp(name, prefix.c_str(), prefix.length()) == 0) {
+            ALOGD("Ignoring class %s", name);
+            return;
+        }
     }
 
     // Check cache
@@ -657,9 +660,11 @@ void transformNativeHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
     }
 
     auto ignoreList = util::getIgnoredClasses();
-    if (ignoreList.find(class_name) != ignoreList.end()) {
-        ALOGD("Ignoring class %s", class_name);
-        return;
+    for (auto &prefix : ignoreList) {
+        if (strncmp(class_name, prefix.c_str(), prefix.length()) == 0) {
+            ALOGD("Ignoring class %s", class_name);
+            return;
+        }
     }
 
     ALOGI("Hooking native function: %s in class %s (signature: %s)\n", method_name, class_name,
