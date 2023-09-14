@@ -157,6 +157,13 @@ public class Instrumentation {
                         deactivateSynchronization();
                     }
                     break;
+                case 'w':
+                    // wait for idle
+                    if (synchronization) {
+                        Instrumentation.waitForIdle();
+                    }
+                    socket.getOutputStream().write((byte)'d');
+                    break;
 
                 case -1:
                     return;
