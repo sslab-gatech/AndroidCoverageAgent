@@ -99,6 +99,7 @@ namespace util {
 
         // Also, ignore 'J/N'
         ignoredClasses.insert("J/N");
+        ignoredClasses.insert("android/util/StatsLog");
 
         return ignoredClasses;
     }
@@ -430,7 +431,131 @@ void transformHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
  * NATIVE INSTRUMENTATION
  */
 
-void nativeFunctionHook(JNIEnv *env, void *nativeHook);
+void nativeFunctionHook(JNIEnv *env, void *nativeHook, void *arg1, void *arg2, void *arg3,
+                        void *arg4, void *arg5, void *arg6, void *arg7, void *arg8, void *arg9,
+                        void *arg10);
+
+namespace argparse {
+    namespace {
+        // Returns a vector of types from a method signature
+        std::vector<std::string> get_types(std::string signature) {
+            std::vector<std::string> types;
+
+            while (signature.length() > 0) {
+                char c = signature[0];
+                signature = signature.substr(1);
+
+                if (c == '(') {
+                    continue;
+                } else if (c == ')') {
+                    break;
+                } else if (c == 'L') {
+                    int end = signature.find(';');
+                    types.push_back(c + signature.substr(0, end + 1));
+                    signature = signature.substr(end + 1);
+                } else if (c == '[') {
+                    int end = signature.find_first_not_of('[');
+                    // Now, there are two cases: either the next character is a primitive type, or it's an object type
+                    if (signature[end] == 'L') {
+                        end = signature.find(';');
+                    }
+                    types.push_back(c + signature.substr(0, end + 1));
+                    signature = signature.substr(end + 1);
+                } else {
+                    types.push_back(std::string(1, c));
+                }
+            }
+            return types;
+        }
+
+        std::string arg_to_string_int(int index, int arg) {
+            if (index == 0 && 0 < arg && arg < 256) {
+                // This could be a file descriptor. Check if this is an open file descriptor.
+                char path[PATH_MAX];
+                char procPath[PATH_MAX];
+                sprintf(procPath, "/proc/self/fd/%d", arg);
+                ssize_t len = readlink(procPath, path, PATH_MAX);
+                if (len != -1) {
+                    // It's a file descriptor, return the path
+                    path[len] = '\0';
+                    return path;
+                }
+            }
+            return std::to_string(arg);
+        }
+
+        std::string arg_to_string_string(JNIEnv *env, int index, jstring arg) {
+            const char *arg_content = env->GetStringUTFChars(arg, nullptr);
+            if (arg_content == nullptr) {
+                ALOGE("Could not get string arg contents");
+                return "<error>";
+            }
+
+            std::string arg_string_content(arg_content);
+            env->ReleaseStringUTFChars(arg, arg_content);
+
+            if (index == 1) {
+                // This could be the path to a file. Check if this is a file in the filesystem.
+                struct stat sb;
+                if (stat(arg_string_content.c_str(), &sb) == 0) {
+                    // It's a file, return the path
+                    return "file://" + arg_string_content;
+                }
+            }
+
+            return "content://" + arg_string_content;
+        }
+
+        std::string arg_to_string(JNIEnv *env, int index, std::string type, void *arg) {
+            if (type == "I") {
+                return arg_to_string_int(index, (int) reinterpret_cast<std::uintptr_t>(arg));
+            } else if (type == "J") {
+                return std::to_string((long) reinterpret_cast<std::uintptr_t>(arg));
+            } else if (type == "F") {
+                return std::to_string((float) reinterpret_cast<std::uintptr_t>(arg));
+            } else if (type == "D") {
+                return std::to_string((double) reinterpret_cast<std::uintptr_t>(arg));
+            } else if (type == "Z") {
+                return std::to_string((bool) reinterpret_cast<std::uintptr_t>(arg));
+            } else if (type == "B") {
+                return std::to_string((char) reinterpret_cast<std::uintptr_t>(arg));
+            } else if (type == "C") {
+                return std::to_string((char) reinterpret_cast<std::uintptr_t>(arg));
+            } else if (type == "S") {
+                return std::to_string((short) reinterpret_cast<std::uintptr_t>(arg));
+            } else if (type == "Ljava/lang/String;") {
+                return arg_to_string_string(env, index, static_cast<jstring>(arg));
+            } else if (type[0] == '[') {
+                return "<array>";
+            } else if (type[0] == 'L') {
+                return "<object>";
+            } else {
+                return "Unknown";
+            }
+        }
+    }
+
+    // Parses the JNI arguments and returns a printable string
+    std::string parseJniArgs(JNIEnv *env, std::string signature, void *arg1, void *arg2, void *arg3,
+                             void *arg4, void *arg5, void *arg6, void *arg7, void *arg8, void *arg9,
+                             void *arg10) {
+        // Parse the signature into types
+        std::vector<std::string> types = get_types(signature);
+
+        void *args[] = {arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10};
+
+        // Iterate through all the args and print them, according to their type
+        std::stringstream ss;
+        for (int i = 0; i < types.size(); i++) {
+            ss << arg_to_string(env, i, types[i], args[i]);
+            if (i != types.size() - 1) {
+                ss << ", ";
+            }
+        }
+
+        return ss.str();
+    }
+}
 
 class NativeHook {
 public:
@@ -443,7 +568,9 @@ public:
         createTrampoline();
     }
 
-    void instrumentation(JNIEnv *env) {
+    void instrumentation(JNIEnv *env, void *thisPtr, void *arg1, void *arg2, void *arg3,
+                         void *arg4, void *arg5, void *arg6, void *arg7, void *arg8, void *arg9,
+                         void *arg10) {
         ALOGD("Instrumentation called for: %s in class %s (signature: %s)", functionName.c_str(),
               className.c_str(), methodSignature.c_str());
 
@@ -485,7 +612,10 @@ public:
         // Open the file and append the function name and signature
         std::ofstream logFileStream;
         logFileStream.open(logFile, std::ios_base::app);
-        logFileStream << className << "," << functionName << "," << methodSignature << std::endl;
+        logFileStream << className << "," << functionName << "," << methodSignature;
+        logFileStream << " " << argparse::parseJniArgs(env, methodSignature, arg1, arg2, arg3, arg4,
+                                                       arg5, arg6, arg7, arg8, arg9, arg10)
+                      << std::endl;
         logFileStream.close();
 
         env->ReleaseStringUTFChars(traceFile, traceFileName);
@@ -505,7 +635,7 @@ private:
     void createTrampoline() {
         unsigned int trampoline_code_size;
 #ifdef __x86_64__
-        trampoline_code_size = 55;
+        trampoline_code_size = 141;
 #elif __aarch64__
         // TODO
         trampoline_code_size = 0;
@@ -543,43 +673,74 @@ private:
         trampoline_ptr[7] = 0x41;
         trampoline_ptr[8] = 0x51;
 
+        // Push the first 4 arguments from the upper stack frame into this stack frame
+        // sub rsp, 0x30
+        trampoline_ptr[9] = 0x48;
+        trampoline_ptr[10] = 0x83;
+        trampoline_ptr[11] = 0xec;
+        trampoline_ptr[12] = 0x30;
+        for (int i = 0; i<6; i++) {
+            // mov rax, [rsp + 0x70 + i*8]; mov [rsp + i*8], rax
+            int size = 13;
+            trampoline_ptr[13+i*size+0] = 0x48;
+            trampoline_ptr[13+i*size+1] = 0x8b;
+            trampoline_ptr[13+i*size+2] = 0x84;
+            trampoline_ptr[13+i*size+3] = 0x24;
+            trampoline_ptr[13+i*size+4] = 0x70 + i*8;
+            trampoline_ptr[13+i*size+5] = 0x00;
+            trampoline_ptr[13+i*size+6] = 0x00;
+            trampoline_ptr[13+i*size+7] = 0x00;
+            trampoline_ptr[13+i*size+8] = 0x48;
+            trampoline_ptr[13+i*size+9] = 0x89;
+            trampoline_ptr[13+i*size+10] = 0x44;
+            trampoline_ptr[13+i*size+11] = 0x24;
+            trampoline_ptr[13+i*size+12] = i*8;
+        }
+
         // Call the instrumentation
         // mov rax, <address>
-        trampoline_ptr[9] = 0x48;
-        trampoline_ptr[10] = 0xb8;
-        *reinterpret_cast<void **>(&trampoline_ptr[11]) = reinterpret_cast<void *>(&nativeFunctionHook);
+        trampoline_ptr[91] = 0x48;
+        trampoline_ptr[92] = 0xb8;
+        *reinterpret_cast<void **>(&trampoline_ptr[93]) = reinterpret_cast<void *>(&nativeFunctionHook);
         // mov rsi, <this>
-        trampoline_ptr[19] = 0x48;
-        trampoline_ptr[20] = 0xbe;
-        *reinterpret_cast<void **>(&trampoline_ptr[21]) = reinterpret_cast<void *>(this);
+        trampoline_ptr[101] = 0x48;
+        trampoline_ptr[102] = 0xbe;
+        *reinterpret_cast<void **>(&trampoline_ptr[103]) = reinterpret_cast<void *>(this);
         // call rax
-        trampoline_ptr[29] = 0xff;
-        trampoline_ptr[30] = 0xd0;
+        trampoline_ptr[111] = 0xff;
+        trampoline_ptr[112] = 0xd0;
+
+        // Restore the stack pointer
+        // add rsp, 0x30
+        trampoline_ptr[113] = 0x48;
+        trampoline_ptr[114] = 0x83;
+        trampoline_ptr[115] = 0xc4;
+        trampoline_ptr[116] = 0x30;
 
         // Restore the argument registers (pop r9, r8, rcx, rdx, rsi, rdi)
-        trampoline_ptr[31] = 0x41;
-        trampoline_ptr[32] = 0x59;
-        trampoline_ptr[33] = 0x41;
-        trampoline_ptr[34] = 0x58;
-        trampoline_ptr[35] = 0x59;
-        trampoline_ptr[36] = 0x5a;
-        trampoline_ptr[37] = 0x5e;
-        trampoline_ptr[38] = 0x5f;
+        trampoline_ptr[117] = 0x41;
+        trampoline_ptr[118] = 0x59;
+        trampoline_ptr[119] = 0x41;
+        trampoline_ptr[120] = 0x58;
+        trampoline_ptr[121] = 0x59;
+        trampoline_ptr[122] = 0x5a;
+        trampoline_ptr[123] = 0x5e;
+        trampoline_ptr[124] = 0x5f;
 
         // Fix the stack alignment (add rsp, 8)
-        trampoline_ptr[39] = 0x48;
-        trampoline_ptr[40] = 0x83;
-        trampoline_ptr[41] = 0xc4;
-        trampoline_ptr[42] = 0x08;
+        trampoline_ptr[125] = 0x48;
+        trampoline_ptr[126] = 0x83;
+        trampoline_ptr[127] = 0xc4;
+        trampoline_ptr[128] = 0x08;
 
         // Jump to the original function
         // mov rax, <address>
-        trampoline_ptr[43] = 0x48;
-        trampoline_ptr[44] = 0xb8;
-        *reinterpret_cast<void **>(&trampoline_ptr[45]) = originalFunction;
+        trampoline_ptr[129] = 0x48;
+        trampoline_ptr[130] = 0xb8;
+        *reinterpret_cast<void **>(&trampoline_ptr[131]) = originalFunction;
         // jmp rax
-        trampoline_ptr[53] = 0xff;
-        trampoline_ptr[54] = 0xe0;
+        trampoline_ptr[139] = 0xff;
+        trampoline_ptr[140] = 0xe0;
 
 #elif __aarch64__
         // TODO
@@ -622,8 +783,12 @@ private:
 void *NativeHook::currentPage = nullptr;
 int NativeHook::currentPageOffset = 0;
 
-void nativeFunctionHook(JNIEnv *env, void *nativeHook) {
-    reinterpret_cast<NativeHook *>(nativeHook)->instrumentation(env);
+void nativeFunctionHook(JNIEnv *env, void *nativeHook, void *arg1, void *arg2, void *arg3,
+                        void *arg4, void *arg5, void *arg6, void *arg7, void *arg8, void *arg9,
+                        void *arg10) {
+    reinterpret_cast<NativeHook *>(nativeHook)->instrumentation(env, nativeHook, arg1, arg2, arg3,
+                                                                arg4, arg5, arg6, arg7, arg8, arg9,
+                                                                arg10);
 }
 
 void transformNativeHook(jvmtiEnv *jvmtiEnv, JNIEnv *env,
